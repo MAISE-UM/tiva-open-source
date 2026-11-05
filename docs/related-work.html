@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TIVA — Related Work</title>
+<link rel="stylesheet" href="assets/docs.css">
+<script src="assets/nav.js" defer></script>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="index.html">&larr; Docs index</a></div>
+  <h1>TIVA — Related Work</h1>
+  <p>Prior art and algorithmic lineage for the simulation in TIVA (STANPUMP and target-controlled infusion, the published PK/PD models, and the reference implementation used for comparison).</p>
+</header>
+
+<main>
+  <div class="callout">
+    <p>This page only lists works that the repository itself cites or that are part of the standard background of the method. For the full citations of the PK/PD models see <a href="pk-models.html#published">pk-models.html</a>. TIVA is research and educational software, not a medical device (<a href="project-brief.html#disclaimer">disclaimer</a>).</p>
+  </div>
+
+  <h2 id="lineage">Algorithmic lineage</h2>
+  <table>
+    <tr><th>Work</th><th>Relation to TIVA</th></tr>
+    <tr>
+      <td>Shafer SL, Gregg KM. Algorithms to rapidly achieve and maintain stable drug concentrations at the site of drug effect with a computer-controlled infusion pump. <em>J Pharmacokinet Biopharm</em> 1992;20(2).</td>
+      <td>The method TIVA's simulation follows (root README): a three-compartment model with an effect-site compartment attached to the central compartment, advanced in small fixed time steps. The same paper describes how to find the infusion rate that brings the effect site to a target; <code>client/model/tciEfctIterate.tsx</code> and <code>tciPlasmaIterate.tsx</code> implement that style of calculation (inactive in the current UI). See <a href="simulation-algorithm.html">simulation-algorithm.html</a>.</td>
+    </tr>
+    <tr>
+      <td>STANPUMP (Steven L. Shafer)</td>
+      <td>The well-known computer program for target-controlled infusion (TCI) of intravenous drugs, built on the Shafer and Gregg algorithms. It is the standard reference for the concept TIVA reuses, with one important difference in purpose: STANPUMP computes and drives infusions toward a target, while TIVA reconstructs and displays the concentrations that result from the doses that were actually given.</td>
+    </tr>
+    <tr>
+      <td>Octave reference implementation (provided by Utah)</td>
+      <td>The implementation TIVA's client was compared against on 101 cases (347 drug-specific comparisons; maximum deviation 0.103%, median 0.009%; see the root README). The comparison data came from real cases and is not in this repository. It shows the web app reproduces the reference calculations; it is not a clinical validation.</td>
+    </tr>
+    <tr>
+      <td>Published PK/PD models (Schnider, Minto, Shafer, Scott/Stanski, Gepts, Ravn, Albrecht, Roy, Cooper/Plaud, Dyck)</td>
+      <td>Supply the parameters. TIVA does not define its own models. Parameters are computed in SQL stored procedures per patient. See <a href="pk-models.html">pk-models.html</a>.</td>
+    </tr>
+  </table>
+
+  <h2 id="tci">Target-controlled infusion in practice</h2>
+  <p>Clinical TCI pumps implement the same family of compartment models in device firmware to calculate infusion rates toward a plasma or effect-site target. TIVA does not control any device and makes no claim of equivalence with any pump or vendor implementation. Its inputs are a patient's recorded or entered doses, and its output is a model prediction displayed in a browser.</p>
+
+  <h2 id="differences">How TIVA differs</h2>
+  <ul>
+    <li><strong>Retrospective and descriptive.</strong> The input is a dosing history (boluses, infusion starts, rate changes, stops), not a target.</li>
+    <li><strong>EHR-driven.</strong> Doses and demographics can be pulled from an EHR over SMART on FHIR and refreshed during the case (<a href="ehr-launch-flow.html">ehr-launch-flow.html</a>).</li>
+    <li><strong>Database-defined models.</strong> Drugs, units and PK models are rows and stored procedures, so a site can choose or add models without changing code.</li>
+    <li><strong>Browser-side simulation.</strong> The calculation runs in the client; the server supplies parameters and stores logs.</li>
+  </ul>
+
+  <h2 id="more">Further reading</h2>
+  <ul>
+    <li>The citations in <a href="pk-models.html#published">pk-models.html</a> are the primary sources for each model.</li>
+    <li>The repository README (&ldquo;PK models&rdquo; and &ldquo;How the simulation works&rdquo;) for the agreement analysis and its limits.</li>
+  </ul>
+
+  <footer>tiva-open-source workspace docs</footer>
+</main>
+</body>
+</html>

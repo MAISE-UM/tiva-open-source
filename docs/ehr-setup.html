@@ -1,0 +1,562 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TIVA — EHR Setup Guide</title>
+<link rel="stylesheet" href="assets/docs.css">
+<script src="assets/nav.js" defer></script>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="index.html">&larr; Docs index</a></div>
+  <h1>TIVA — EHR Setup Guide</h1>
+  <p>How to connect TIVA to an EHR with SMART on FHIR (tested with Epic): how the pieces fit together, how to configure the <strong>login</strong>, and how to configure the <strong>patient data</strong> the dashboard loads.</p>
+</header>
+
+<main>
+  <div class="toc">
+    <a href="#overview">1. How the pieces fit</a>
+    <a href="#before-you-start">2. Before you start</a>
+    <a href="#login-flow">3. What happens during a login</a>
+    <a href="#register">4. Register with the EHR</a>
+    <a href="#keys">5. Create the key pair</a>
+    <a href="#configure-login">6. Configure the login</a>
+    <a href="#data-flow">7. How patient data is loaded</a>
+    <a href="#configure-data">8. Configure the patient data</a>
+    <a href="#test">9. Test it</a>
+    <a href="#troubleshooting">10. Troubleshooting</a>
+    <a href="#code-map">11. Where things are defined</a>
+  </div>
+
+  <div class="callout">
+    <p>This page is a setup walkthrough. For a step-by-step trace of one launch through the code, with a sequence diagram, see <a href="ehr-launch-flow.html">ehr-launch-flow.html</a>. For the endpoint engine and the full list of seeded endpoints, see <a href="api.html#endpoint-engine">api.html &sect; Endpoint engine</a>.</p>
+    <p>All site-specific values live in the <code>Ehr</code> section of the API settings. You should not need to change code to connect TIVA to your EHR.</p>
+  </div>
+
+  <!-- ===================================================================== 1 -->
+  <h2 id="overview">1. How the pieces fit together</h2>
+  <div class="diagram">
+    <svg viewBox="0 0 900 320" width="900" height="320" role="img" aria-label="EHR, browser, client, API and database">
+      <defs>
+        <marker id="ea" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="#1a4a7a"/>
+        </marker>
+        <marker id="eb" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="#8a4b00"/>
+        </marker>
+      </defs>
+      <style>
+        .bx { fill:#00274c; }
+        .bt { font: 700 13px -apple-system,Segoe UI,Roboto,sans-serif; fill:#ffcb05; }
+        .bs { font: 11px -apple-system,Segoe UI,Roboto,sans-serif; fill:#d6e0ee; }
+        .ln { stroke:#1a4a7a; stroke-width:1.6; fill:none; }
+        .ld { stroke:#8a4b00; stroke-width:2.2; fill:none; }
+        .lb { font: 11.5px -apple-system,Segoe UI,Roboto,sans-serif; fill:#1a1a1a; }
+        .lo { font: 700 11.5px -apple-system,Segoe UI,Roboto,sans-serif; fill:#8a4b00; }
+      </style>
+      <!-- boxes -->
+      <rect class="bx" x="20" y="120" width="190" height="96" rx="8"/>
+      <text class="bt" x="115" y="152" text-anchor="middle">EHR (Epic)</text>
+      <text class="bs" x="115" y="173" text-anchor="middle">OAuth endpoints</text>
+      <text class="bs" x="115" y="189" text-anchor="middle">FHIR server</text>
+      <text class="bs" x="115" y="205" text-anchor="middle">web services</text>
+
+      <rect class="bx" x="345" y="20" width="190" height="56" rx="8"/>
+      <text class="bt" x="440" y="46" text-anchor="middle">User&#8217;s browser</text>
+      <text class="bs" x="440" y="63" text-anchor="middle">holds TIVA cookies only</text>
+
+      <rect class="bx" x="690" y="20" width="190" height="56" rx="8"/>
+      <text class="bt" x="785" y="46" text-anchor="middle">Next.js client</text>
+      <text class="bs" x="785" y="63" text-anchor="middle">https://tiva.example.org/</text>
+
+      <rect class="bx" x="690" y="130" width="190" height="76" rx="8"/>
+      <text class="bt" x="785" y="158" text-anchor="middle">TIVA API</text>
+      <text class="bs" x="785" y="176" text-anchor="middle">IIS application &#8220;REST&#8221;</text>
+      <text class="bs" x="785" y="192" text-anchor="middle">https://tiva.example.org/REST/</text>
+
+      <rect class="bx" x="690" y="250" width="190" height="52" rx="8"/>
+      <text class="bt" x="785" y="272" text-anchor="middle">SQL Server</text>
+      <text class="bs" x="785" y="289" text-anchor="middle">users, roles, endpoint rows</text>
+
+      <!-- browser <-> client -->
+      <path class="ln" d="M537,48 L688,48" marker-start="url(#ea)" marker-end="url(#ea)"/>
+      <text class="lb" x="612" y="40" text-anchor="middle">pages</text>
+      <!-- browser <-> API -->
+      <path class="ln" d="M500,78 L700,130" marker-start="url(#ea)" marker-end="url(#ea)"/>
+      <text class="lb" x="640" y="118" text-anchor="middle">login steps, data calls</text>
+      <!-- EHR <-> browser -->
+      <path class="ln" d="M190,118 L350,74" marker-start="url(#ea)" marker-end="url(#ea)"/>
+      <text class="lb" x="236" y="84" text-anchor="middle">login redirects</text>
+      <!-- API -> EHR -->
+      <path class="ld" d="M688,176 L212,176" marker-end="url(#eb)"/>
+      <text class="lo" x="450" y="164" text-anchor="middle">token exchange and patient data</text>
+      <text class="lb" x="450" y="196" text-anchor="middle">server to server: the browser never sees the EHR tokens</text>
+      <!-- API <-> DB -->
+      <path class="ln" d="M785,208 L785,248" marker-start="url(#ea)" marker-end="url(#ea)"/>
+    </svg>
+    <div class="caption">Login travels as redirects through the browser. Patient data is fetched by the API directly from the EHR, using the user&#8217;s EHR token held in the API&#8217;s memory.</div>
+  </div>
+
+  <p>There are two separate jobs, and they are configured in different places:</p>
+  <div class="table-wrap">
+  <table>
+    <tr><th>Job</th><th>What happens</th><th>Defined in</th><th>Changing it needs</th></tr>
+    <tr><td><strong>Login</strong></td><td>The EHR sends the user to TIVA, the user is authenticated with the EHR, and TIVA signs them in.</td><td><strong>Code plus the <code>Ehr</code> settings</strong> (<code>EhrOAuthController</code>, <code>SmartOnFhirService</code>)</td><td>Editing settings, then recycling the API</td></tr>
+    <tr><td><strong>Patient data</strong></td><td>The dashboard asks the API for the patient&#8217;s data; the API calls the EHR with the user&#8217;s EHR token.</td><td><strong>Database rows</strong> (<code>api.Endpoints</code> and related tables)</td><td>Editing rows, then <code>POST /Admin/ReloadEndpoints</code></td></tr>
+  </table>
+  </div>
+
+  <p>Two terms are used throughout and are easy to mix up:</p>
+  <ul>
+    <li>A <strong>route</strong> is a URL the TIVA API itself answers, for example <code>ehr/launch</code>. The login routes are mapped when the API starts, with paths taken from <code>Ehr:Routes</code>.</li>
+    <li>An <strong>endpoint</strong> is a database-defined API call, for example <code>FHIR/GetVitalSigns</code>. All endpoints are served by one generic route, <code>/Api/{schema}/{endpoint}</code>. For REST endpoints, each row tells the API which EHR URL to call and how.</li>
+  </ul>
+
+  <!-- ===================================================================== 2 -->
+  <h2 id="before-you-start">2. Before you start</h2>
+  <p>You need:</p>
+  <ul>
+    <li>The TIVA API and client deployed and working <em>without</em> the EHR (see <code>api/README.md</code> and <code>client/README.md</code>). The database must be built (<code>examples/CreateDB.sql</code>) and seeded (<code>examples/SeedData.sql</code>).</li>
+    <li>A public <strong>HTTPS</strong> host name for TIVA, for example <code>tiva.example.org</code>. The EHR redirects the user&#8217;s browser to it, and the login cookies are set <code>Secure</code> with <code>SameSite=None</code>, so plain HTTP does not work.</li>
+    <li>A SMART on FHIR <strong>app registration</strong> with your EHR vendor (<a href="#register">section 4</a>). For Epic this is normally done by your hospital&#8217;s Epic team. Allow time for it: you cannot test the login until it exists.</li>
+    <li>Access to the EHR&#8217;s <strong>non-production</strong> environment and a test patient with a surgical case.</li>
+    <li>OpenSSL (or another way to create an RSA key pair), for <a href="#keys">section 5</a>.</li>
+  </ul>
+
+  <h3>How the URLs fit together</h3>
+  <p>Getting the URLs consistent is the most common setup problem. This table shows each value, where it is set, and what it is used for. The example host is <code>tiva.example.org</code>.</p>
+  <div class="table-wrap">
+  <table>
+    <tr><th>Value</th><th>Example</th><th>Set in</th><th>Used for</th></tr>
+    <tr><td>Site root</td><td><code>https://tiva.example.org/</code></td><td><code>JwtAuthentication:ValidIssuer</code> (API) and <code>NEXT_PUBLIC_LAUNCH_BASE_URL</code> (client)</td><td>The API builds redirects to client pages as <code>ValidIssuer</code> + a path, for example <code>https://tiva.example.org/</code> + <code>auth/ehrloading</code>. <strong>It must end with <code>/</code>.</strong></td></tr>
+    <tr><td>API root</td><td><code>https://tiva.example.org/REST/</code></td><td>IIS application alias <code>REST</code>; <code>NEXT_PUBLIC_EXTERNAL_API_BASE_URL</code> (client, no trailing <code>/</code>)</td><td>The URLs the EHR and the browser use to reach the API.</td></tr>
+    <tr><td>Login routes</td><td><code>https://tiva.example.org/REST/ehr/launch</code></td><td><code>Ehr:Routes:*</code> (API)</td><td>Registered with the EHR vendor (<a href="#register">section 4</a>).</td></tr>
+    <tr><td>Redirect URI</td><td><code>https://tiva.example.org/REST/ehr/callback</code></td><td><code>Ehr:RedirectUrl</code> (API)</td><td>Must <strong>exactly</strong> match the redirect URI registered with the EHR.</td></tr>
+    <tr><td>Cookie domain</td><td><code>tiva.example.org</code></td><td><code>AppSettings:COOKIE_DOMAIN</code> (API)</td><td>The domain the login cookies are set for. It must match the site host or the browser will not send them back.</td></tr>
+    <tr><td>Site URL</td><td><code>https://tiva.example.org</code></td><td><code>AppSettings:SITE_URL</code> (API)</td><td>The browser origin allowed to call the API (CORS).</td></tr>
+    <tr><td>JWKS URL</td><td><code>https://tiva.example.org/REST/.well-known/jwks.json</code></td><td><code>AppSettings:AUTH_JKU_URL</code> (API)</td><td>Where TIVA&#8217;s public keys are published. Registered with the EHR vendor, and used by the client to check TIVA&#8217;s own tokens.</td></tr>
+  </table>
+  </div>
+
+  <div class="callout">
+    <p><strong>About <code>/REST</code>.</strong> On a standard Windows deployment, IIS serves the API as an application with the alias <code>REST</code>. IIS removes that prefix before the API sees the request, so inside the API the route is <code>ehr/launch</code>, while the EHR and the browser use <code>/REST/ehr/launch</code>. Everything on this page written as <code>/REST/...</code> is the outside URL. If you host the API a different way, adjust the prefix.</p>
+  </div>
+
+  <h3>Where the settings go</h3>
+  <p>On a server, the <code>Ehr</code> settings go in the IIS <code>web.config</code> as <code>MA_*</code> variables. On your own machine they go in <code>appsettings.json</code>. A setting&#8217;s JSON path becomes its variable name: <code>Ehr</code> &rarr; <code>ClientId</code> is <code>MA_Ehr__ClientId</code>, and list items get an index (<code>MA_Ehr__AllowedIssuers__0</code>). If a value is in both places, the <code>web.config</code> wins. Details are in <code>api/README.md</code>, section &#8220;Which config file do I edit?&#8221;. Templates: <code>api/deploy/appsettings.example.json</code> and <code>api/deploy/web.config.example</code>.</p>
+
+  <!-- ===================================================================== 3 -->
+  <h2 id="login-flow">3. What happens during a login</h2>
+  <p>Read this once so the settings in the next sections make sense. <a href="ehr-launch-flow.html">ehr-launch-flow.html</a> has the sequence diagram and a code-level trace.</p>
+  <ol>
+    <li><strong>Launch.</strong> A user clicks the TIVA link on a case in the EHR. The EHR opens <code>/REST/ehr/launch</code> and adds query parameters: <code>iss</code> (the EHR&#8217;s FHIR server URL), <code>launch</code> (a one-time token), and the case ID and the user&#8217;s name under the parameter names you set in <code>Ehr:LaunchParameters</code>.</li>
+    <li><strong>Authorize.</strong> TIVA checks that <code>iss</code> is one it trusts (<code>Ehr:AllowedIssuers</code>), downloads the EHR&#8217;s FHIR metadata (the <em>CapabilityStatement</em>) to find the EHR&#8217;s authorize and token URLs, remembers the case details under a random <code>state</code> value, and redirects the browser to the EHR&#8217;s authorize page.</li>
+    <li><strong>Callback.</strong> The EHR sends the browser to <code>Ehr:RedirectUrl</code> (<code>/REST/ehr/callback</code>) with a one-time authorization <code>code</code>. TIVA keeps the code in a cookie and sends the browser to the client page <code>auth/ehrloading</code>.</li>
+    <li><strong>Complete.</strong> That page sends the browser to <code>/REST/ehr/complete</code>. Now TIVA, server to server:
+      <ol type="a">
+        <li>exchanges the <code>code</code> for tokens at the EHR&#8217;s token URL, proving who it is with a <strong>client assertion</strong>: a short-lived JWT signed with TIVA&#8217;s private key (<a href="#keys">section 5</a>);</li>
+        <li>checks the <code>id_token</code> signature using the EHR&#8217;s public keys (<code>Ehr:JwksUrl</code>), and its issuer and audience (<code>Ehr:Issuer</code>, <code>Ehr:ClientId</code>);</li>
+        <li>turns a claim in the <code>id_token</code> into a TIVA user name and finds that user, or creates one (<code>Ehr:User</code>);</li>
+        <li>creates TIVA&#8217;s own login tokens, and stores them <strong>together with the EHR&#8217;s access and refresh tokens</strong> in a server-side session. The browser gets only TIVA&#8217;s cookies.</li>
+      </ol>
+    </li>
+    <li><strong>Dashboard.</strong> TIVA redirects to <code>auth/ehrlaunch</code>, which opens the dashboard with <code>?fromEhr=true</code> and starts the patient data load (<a href="#data-flow">section 7</a>).</li>
+  </ol>
+  <p>If anything fails in step 4, the user is redirected to <code>Ehr:ClientRoutes:Failure</code> (default: the <code>Search</code> page) and the reason is written to the error log.</p>
+  <div class="callout warn">
+    <p><strong>Timing limits.</strong> The <code>state</code> is remembered for <strong>10 minutes</strong>, so the user must finish the login within that time or the case ID is lost. The EHR metadata is cached in memory (60 minutes, renewed each time it is used), so after changing <code>MetadataUrl</code> or <code>MetadataHeaders</code> recycle the API.</p>
+  </div>
+
+  <!-- ===================================================================== 4 -->
+  <h2 id="register">4. Register TIVA with your EHR vendor</h2>
+  <p>For Epic, create a SMART on FHIR app (for example through the Epic on FHIR developer site, or ask your Epic team to create it) and give them:</p>
+  <div class="table-wrap">
+  <table>
+    <tr><th>Item</th><th>Value</th></tr>
+    <tr><td>Launch URL</td><td><code>https://&lt;your TIVA host&gt;/REST/ehr/launch</code></td></tr>
+    <tr><td>Redirect URI</td><td><code>https://&lt;your TIVA host&gt;/REST/ehr/callback</code></td></tr>
+    <tr><td>JWK Set URL</td><td><code>https://&lt;your TIVA host&gt;/REST/.well-known/jwks.json</code></td></tr>
+    <tr><td>Scopes</td><td><code>openid fhirUser profile launch</code>, plus read access to the FHIR resources TIVA reads (Observation, MedicationStatement, and the Epic web services in <a href="#configure-data">section 8</a>)</td></tr>
+  </table>
+  </div>
+  <p>Ask the EHR team to configure the launch so that it <strong>passes the surgical case ID and the user&#8217;s first and last name as query parameters</strong>, and note what they are called. The names in the example config are <code>SurgeryID</code>, <code>ReporterFirstName</code> and <code>ReporterLastName</code>.</p>
+  <p>The paths above are the defaults of <code>Ehr:Routes</code>. If the app is already registered under other paths, do not change the registration; set <code>Ehr:Routes</code> to match (<a href="#configure-login">section 6</a>).</p>
+
+  <p>The registration gives you values you need in section 6. Collect them now:</p>
+  <div class="table-wrap">
+  <table>
+    <tr><th>You receive</th><th>Goes into</th></tr>
+    <tr><td><strong>Client ID</strong></td><td><code>Ehr:ClientId</code></td></tr>
+    <tr><td>The EHR&#8217;s <strong>token issuer</strong> name</td><td><code>Ehr:Issuer</code></td></tr>
+    <tr><td>The URL of the EHR&#8217;s <strong>public signing keys</strong> (JWKS)</td><td><code>Ehr:JwksUrl</code></td></tr>
+    <tr><td>The URL of the EHR&#8217;s <strong>FHIR metadata</strong></td><td><code>Ehr:MetadataUrl</code></td></tr>
+    <tr><td><em>(Optional)</em> The EHR&#8217;s <strong>FHIR server URL</strong> as it appears in <code>iss</code> on a launch. This is usually not handed out at registration; see <code>AllowedIssuers</code> under &#8220;Identity and trust&#8221; in <a href="#configure-login">section 6</a> for how to find it.</td><td><code>Ehr:AllowedIssuers</code> (can start empty)</td></tr>
+    <tr><td>The <strong>names of the launch query parameters</strong></td><td><code>Ehr:LaunchParameters</code></td></tr>
+  </table>
+  </div>
+  <p>If the EHR publishes OpenID Connect configuration at <code>&lt;issuer&gt;/.well-known/openid-configuration</code>, its <code>issuer</code> and <code>jwks_uri</code> fields are the values for <code>Ehr:Issuer</code> and <code>Ehr:JwksUrl</code>. The FHIR metadata is normally at <code>&lt;FHIR base URL&gt;/metadata</code>. Otherwise, ask the EHR team.</p>
+
+  <!-- ===================================================================== 5 -->
+  <h2 id="keys">5. Create the client assertion key pair</h2>
+  <p>To get tokens, TIVA must prove to the EHR that it is the registered app. It does this by signing a small JWT with a private key; the EHR checks the signature with the matching public key, which it downloads from the JWK Set URL you registered.</p>
+<pre><code>openssl genrsa -out ehr-private.pem 2048
+openssl req -new -x509 -key ehr-private.pem -out ehr-public.pem -subj "/CN=tiva" -days 3650</code></pre>
+  <ul>
+    <li>Put the contents of <code>ehr-private.pem</code> in <code>Ehr:ClientAssertion:PrivateKey</code>. <strong>Never commit it.</strong></li>
+    <li>Put the contents of <code>ehr-public.pem</code> (an X.509 certificate) in <code>Ehr:ClientAssertion:PublicCertificate</code>. TIVA publishes it at <code>/.well-known/jwks.json</code> for the EHR to fetch.</li>
+    <li>In JSON, write PEM line breaks as <code>\n</code>. In <code>web.config</code> the value can contain real line breaks.</li>
+  </ul>
+  <p>The assertion TIVA builds has these claims: <code>iss</code> and <code>sub</code> = your <code>ClientId</code>, <code>aud</code> = the token URL, a random <code>jti</code>, and <code>exp</code> = now + <code>LifetimeMinutes</code> (default 2). It is signed with <code>Algorithm</code> (default <code>RS384</code>). If the EHR identifies keys by <code>kid</code>, <code>Kid</code> must match what the EHR has on file; set <code>IncludeKidHeader</code> to <code>false</code> if the EHR does not want it. Epic&#8217;s guide: <a href="https://vendorservices.epic.com/Article?docId=oauth2&amp;section=Creating-Key-Pair-OpenSSL">Creating a key pair with OpenSSL</a>.</p>
+
+  <!-- ===================================================================== 6 -->
+  <h2 id="configure-login">6. Configure the login</h2>
+
+  <h3>A minimal working configuration</h3>
+  <p>This is the smallest <code>Ehr</code> section for an Epic-style EHR. Anything you leave out takes the default from <code>Models/EhrSettings.cs</code>. The full example with every setting is <code>api/deploy/appsettings.example.json</code>.</p>
+<pre><code>"Ehr": {
+  "Enabled": true,
+  "DisplayName": "EHR",
+  "ClientId": "&lt;client ID from the app registration&gt;",
+
+  "Issuer": "https://ehr.example.org/oauth2",
+  "JwksUrl": "https://ehr.example.org/oauth2/jwks",
+  "MetadataUrl": "https://ehr.example.org/api/FHIR/R4/metadata",
+  "AllowedIssuers": [ "https://ehr.example.org/api/FHIR/R4" ],
+
+  "RedirectUrl": "https://tiva.example.org/REST/ehr/callback",
+
+  "MetadataHeaders": { "Epic-Client-ID": "{ClientId}" },
+
+  "ClientAssertion": {
+    "PrivateKey": "-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----",
+    "PublicCertificate": "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----",
+    "Kid": "ehr"
+  }
+}</code></pre>
+  <p>Of these, <code>AllowedIssuers</code> is the one you can leave out at first (see its row below). The rest is what an Epic-style EHR typically needs (<code>MetadataHeaders</code> is Epic-specific, and <code>DisplayName</code> only changes labels).</p>
+  <p>Also make sure the settings in the <a href="#before-you-start">URL table</a> are correct: <code>JwtAuthentication:ValidIssuer</code> (with trailing <code>/</code>), <code>AppSettings:COOKIE_DOMAIN</code>, <code>AppSettings:SITE_URL</code> and <code>AppSettings:AUTH_JKU_URL</code>, and the client&#8217;s <code>NEXT_PUBLIC_EXTERNAL_API_BASE_URL</code>.</p>
+
+  <h3>What each setting does</h3>
+
+  <h4>Switch and label</h4>
+  <div class="table-wrap">
+  <table>
+    <tr><th>Setting</th><th>Default</th><th>Meaning</th></tr>
+    <tr><td><code>Enabled</code></td><td><code>false</code></td><td>When <code>false</code>, <strong>none of the EHR login routes exist</strong> (they return 404).</td></tr>
+    <tr><td><code>DisplayName</code></td><td><code>EHR</code></td><td>Name shown in the dashboard messages (for example &#8220;Please relaunch from <em>DisplayName</em>&#8221;) and saved as the login source in the login log.</td></tr>
+  </table>
+  </div>
+
+  <h4>Identity and trust</h4>
+  <p>Used to check the <code>id_token</code> and the launch.</p>
+  <div class="table-wrap">
+  <table>
+    <tr><th>Setting</th><th>Meaning</th></tr>
+    <tr><td><code>ClientId</code></td><td>The app&#8217;s client ID. Also the expected <em>audience</em> of the <code>id_token</code>.</td></tr>
+    <tr><td><code>Issuer</code></td><td>The expected <code>iss</code> of the <code>id_token</code>. It must match exactly.</td></tr>
+    <tr><td><code>JwksUrl</code></td><td>Where TIVA downloads the EHR&#8217;s public keys to verify the <code>id_token</code> signature.</td></tr>
+    <tr><td><code>AllowedIssuers</code></td><td>The <code>iss</code> values a launch may come from, for example <code>https://ehr.example.org/api/FHIR/R4</code>. Compared ignoring case and any trailing <code>/</code>. A launch from any other issuer is rejected with HTTP 403. <strong>If the list is empty, any issuer is accepted</strong> and a warning is logged at start-up. It is optional: a site can run with it empty, at the cost of accepting a launch from any issuer. Set it in production once you know the value.
+      <br><br><strong>Finding the value.</strong> An accepted launch does <em>not</em> log the <code>iss</code> (only the names of the query parameters), so with an empty list it will not be in the log. Ways to get it:
+      <ul>
+        <li>Take <code>Ehr:MetadataUrl</code> without the trailing <code>/metadata</code>. The launch downloads <code>{iss}/metadata</code>, so for the same server the two line up (for example <code>.../api/FHIR/R4/metadata</code> &rarr; <code>.../api/FHIR/R4</code>).</li>
+        <li>Read the <code>iss</code> query parameter of the first request to <code>/REST/ehr/launch</code>: in the IIS request log, which records query strings, or in the browser&#8217;s developer tools (Network tab, with &#8220;Preserve log&#8221; on) during a test launch.</li>
+        <li>Set the list to a placeholder value for one test launch. The launch is then rejected with 403 and the error log shows <code>EHR launch rejected, issuer not allowed: &lt;iss&gt;</code>.</li>
+      </ul></td></tr>
+  </table>
+  </div>
+
+  <h4>Finding the EHR&#8217;s authorize and token URLs</h4>
+  <div class="table-wrap">
+  <table>
+    <tr><th>Setting</th><th>Default</th><th>Meaning</th></tr>
+    <tr><td><code>MetadataUrl</code></td><td>(empty)</td><td>The FHIR metadata URL. During an EHR launch TIVA uses <code>{iss}/metadata</code>. <code>MetadataUrl</code> is used when there is no <code>iss</code>: the standalone launch, and refreshing the EHR token later. <strong>Set it.</strong></td></tr>
+    <tr><td><code>MetadataHeaders</code></td><td>(none)</td><td>Extra headers sent when downloading the metadata. <code>{ClientId}</code> is replaced with <code>ClientId</code>. Epic needs <code>Epic-Client-ID</code>. Remove it for other EHRs.</td></tr>
+    <tr><td><code>EndpointDiscovery</code></td><td><code>ByUrl</code></td><td>How the URLs are found in the metadata (below).</td></tr>
+  </table>
+  </div>
+  <p>The metadata is JSON. TIVA reads <code>rest[0].security.extension</code>, which holds the OAuth URLs:</p>
+<pre><code>"rest": [{ "security": { "extension": [{
+    "url": "http://fhir-registry.smarthealthit.org/StructureDefinition/oauth-uris",
+    "extension": [
+      { "url": "authorize", "valueUri": "https://ehr.example.org/oauth2/authorize" },
+      { "url": "token",     "valueUri": "https://ehr.example.org/oauth2/token" }
+    ]
+}]}}]</code></pre>
+  <ul>
+    <li><code>ByUrl</code> looks up the entries whose <code>url</code> is <code>authorize</code> and <code>token</code>. Use this unless it does not work.</li>
+    <li><code>ByIndex</code> takes the first entry as authorize and the second as token, regardless of their names. Use it for EHRs that do not label them.</li>
+  </ul>
+
+  <h4>Redirects and scopes</h4>
+  <div class="table-wrap">
+  <table>
+    <tr><th>Setting</th><th>Default</th><th>Meaning</th></tr>
+    <tr><td><code>RedirectUrl</code></td><td>(empty)</td><td>Where the EHR returns the user after authorizing. <strong>Must exactly match the registered redirect URI</strong>, character for character.</td></tr>
+    <tr><td><code>LaunchScope</code></td><td><code>openid fhirUser profile launch</code></td><td>Scopes requested on an EHR launch.</td></tr>
+    <tr><td><code>StandaloneScope</code></td><td><code>openid fhirUser profile</code></td><td>Scopes requested on a standalone launch.</td></tr>
+    <tr><td><code>StandaloneRedirectUrl</code></td><td>(empty)</td><td>Redirect URI for the standalone flow. Empty means <code>{ValidIssuer}REST/{Routes:StandaloneCallback}</code>.</td></tr>
+    <tr><td><code>StandaloneAuthorizeUrl</code></td><td>(empty)</td><td>Authorize URL for the standalone flow. Empty means the one found in the metadata.</td></tr>
+    <tr><td><code>TokenRefreshMinutes</code></td><td><code>45</code></td><td>The EHR access token is refreshed (with the refresh token) when it is older than this. Set it below the EHR&#8217;s token lifetime.</td></tr>
+  </table>
+  </div>
+
+  <h4>Route paths</h4>
+  <p><code>Routes</code> are URLs on the API. <code>ClientRoutes</code> are pages in the Next.js client.</p>
+  <div class="table-wrap">
+  <table>
+    <tr><th>Setting</th><th>Default</th><th>Meaning</th></tr>
+    <tr><td><code>Routes:Launch</code></td><td><code>ehr/launch</code></td><td>The launch URL registered with the EHR.</td></tr>
+    <tr><td><code>Routes:Callback</code></td><td><code>ehr/callback</code></td><td>The redirect URI path.</td></tr>
+    <tr><td><code>Routes:Complete</code></td><td><code>ehr/complete</code></td><td>The final step. The client reads this path from <code>GET /REST/ehr/client-config</code>.</td></tr>
+    <tr><td><code>Routes:StandaloneLaunch</code></td><td><code>ehr/standalone</code></td><td>Standalone launch.</td></tr>
+    <tr><td><code>Routes:StandaloneCallback</code></td><td><code>ehr/standalone/callback</code></td><td>Standalone redirect path.</td></tr>
+    <tr><td><code>ClientRoutes:Loading</code></td><td><code>auth/ehrloading</code></td><td>Client page shown after the callback.</td></tr>
+    <tr><td><code>ClientRoutes:Launched</code></td><td><code>auth/ehrlaunch</code></td><td>Client page after a successful login. Opens the dashboard in EHR mode.</td></tr>
+    <tr><td><code>ClientRoutes:Failure</code></td><td><code>Search</code></td><td>Client page after a failed login.</td></tr>
+    <tr><td><code>ClientRoutes:StandaloneLaunched</code></td><td>(empty)</td><td>Client page after a successful standalone login.</td></tr>
+  </table>
+  </div>
+  <p>Client pages under <code>auth/</code> skip the client&#8217;s page permission check, so they need no database rows. A site whose EHR app is already registered under other paths (for example <code>mylink</code> instead of <code>ehr/launch</code>) just sets them in <code>Routes</code>. The <code>Map(...)</code> calls in <code>Startup.cs</code> register whatever you set. <code>Routes:*</code> change which URL runs which method; the methods themselves are fixed.</p>
+
+  <h4>Launch parameters</h4>
+  <p>The query-string names the EHR adds to the launch URL.</p>
+  <div class="table-wrap">
+  <table>
+    <tr><th>Setting</th><th>Default</th></tr>
+    <tr><td><code>LaunchParameters:CaseId</code></td><td><code>SurgeryID</code></td></tr>
+    <tr><td><code>LaunchParameters:FirstName</code></td><td><code>ReporterFirstName</code></td></tr>
+    <tr><td><code>LaunchParameters:LastName</code></td><td><code>ReporterLastName</code></td></tr>
+  </table>
+  </div>
+  <p>The case ID is what the dashboard later uses to look up the surgical case (<a href="#data-flow">section 7</a>). If the EHR does not send it, the login still works but no patient data loads.</p>
+
+  <h3>Mapping the EHR user to a TIVA user</h3>
+  <p>After the <code>id_token</code> is validated, TIVA needs a TIVA user name. <code>Ehr:User</code> (EHR launch) and <code>Ehr:StandaloneUser</code> (standalone launch) control how:</p>
+  <div class="table-wrap">
+  <table>
+    <tr><th>Setting</th><th>Default (<code>User</code>)</th><th>Meaning</th></tr>
+    <tr><td><code>ClaimType</code></td><td><code>preferred_username</code></td><td>Which claim of the <code>id_token</code> holds the user name.</td></tr>
+    <tr><td><code>StripPrefixes</code></td><td><code>[]</code></td><td>If the value starts with one of these (ignoring case), the prefix is removed. Only the first match is used.</td></tr>
+    <tr><td><code>Lowercase</code></td><td><code>false</code></td><td>Convert the result to lower case.</td></tr>
+    <tr><td><code>FallbackSuffixes</code></td><td><code>[]</code></td><td>Tried in order if the plain name is not found.</td></tr>
+    <tr><td><code>AutoCreate</code></td><td><code>true</code></td><td>Create the TIVA user if no match is found.</td></tr>
+    <tr><td><code>DefaultRoleId</code></td><td><code>2</code></td><td>Role given to a created user. In the seed data, <code>1</code> is Administrator and <code>2</code> is User.</td></tr>
+  </table>
+  </div>
+  <p><code>StandaloneUser</code> has the same settings, but defaults to <code>Lowercase: true</code> and <code>AutoCreate: false</code>.</p>
+
+  <h4>Worked example</h4>
+  <p>The EHR returns <code>preferred_username = "HOSPITAL\JSmith"</code>, and your TIVA users are stored as <code>jsmith@hospital.org</code>:</p>
+<pre><code>"User": {
+  "ClaimType": "preferred_username",
+  "StripPrefixes": [ "HOSPITAL\\" ],
+  "Lowercase": true,
+  "FallbackSuffixes": [ "@hospital.org" ],
+  "AutoCreate": true,
+  "DefaultRoleId": "2"
+}</code></pre>
+  <ol>
+    <li>Take the claim: <code>HOSPITAL\JSmith</code>.</li>
+    <li>Strip the prefix: <code>JSmith</code>. Lower-case it: <code>jsmith</code>.</li>
+    <li>Look for a TIVA user named <code>jsmith</code>. If found, sign in as that user.</li>
+    <li>If not found, try <code>jsmith@hospital.org</code>. If found, sign in as that user.</li>
+    <li>If still not found and <code>AutoCreate</code> is <code>true</code>, create a user named <code>jsmith</code> with role 2, using the first and last name from the launch parameters.</li>
+    <li>If <code>AutoCreate</code> is <code>false</code>, the login fails and the user is sent to the <code>Failure</code> page.</li>
+  </ol>
+  <p>The backslash is doubled in JSON (<code>"HOSPITAL\\"</code>). In <code>web.config</code> write it once: <code>&lt;environmentVariable name="MA_Ehr__User__StripPrefixes__0" value="HOSPITAL\" /&gt;</code>.</p>
+  <p>The user name matters beyond login. Every call TIVA makes to the EHR for that user includes it, and the endpoint security checks the user&#8217;s role (<a href="#configure-data">section 8</a>), so a created user must have a role that is allowed to call the FHIR endpoints.</p>
+
+  <h3>What the client reads</h3>
+  <p><code>GET /REST/ehr/client-config</code> returns <code>Enabled</code>, <code>DisplayName</code>, the <code>Complete</code> path and <code>DataMapping</code> (<a href="#configure-data">section 8</a>). It contains no secrets. The client calls it to know where to send the browser after <code>auth/ehrloading</code>, so it must work for the login to complete.</p>
+
+  <!-- ===================================================================== 7 -->
+  <h2 id="data-flow">7. How patient data is loaded</h2>
+  <p>After login the dashboard opens as <code>/?fromEhr=true</code>. The client function <code>searchFHIR()</code> (<code>client/lib/med-helpers.tsx</code>) then makes up to four calls through the API, in order, and <strong>stops at the first one that fails or comes back incomplete</strong>, leaving whatever it has loaded so far:</p>
+  <div class="table-wrap">
+  <table>
+    <tr><th>#</th><th>Client function</th><th>API endpoint</th><th>Method</th><th>What it fetches</th><th>Stops the load if</th></tr>
+    <tr><td>1</td><td><code>getFHIRVitalSigns</code></td><td><code>FHIR/GetVitalSigns</code></td><td><span class="pill get">GET</span></td><td>Weight and height (FHIR <code>Observation</code>)</td><td>No weight or no height is found</td></tr>
+    <tr><td>2</td><td><code>getEhrSurgicalCase</code></td><td><code>FHIR/GetSurgicalCase</code></td><td><span class="pill post">POST</span></td><td>Patient name, sex, date of birth, MRN; procedure; operating room; anesthesia start and stop times</td><td>The case has no patient date of birth, name, procedure or room</td></tr>
+    <tr><td>3</td><td><code>getFHIRMedicationStatements</code></td><td><code>FHIR/GetMedicationStatements</code></td><td><span class="pill get">GET</span></td><td>The patient&#8217;s medication orders from 3 days before anesthesia start</td><td>No order matches a TIVA drug</td></tr>
+    <tr><td>4</td><td><code>getMedicationAdministrations</code></td><td><code>FHIR/GetMedicationAdministration</code></td><td><span class="pill post">POST</span></td><td>The doses given for the matched orders</td><td>(end)</td></tr>
+  </table>
+  </div>
+  <p>Where the inputs come from:</p>
+  <ul>
+    <li>The case ID and patient ID were stored at login in the <code>X-SurgicalID</code> cookie as <code>&lt;case id&gt;||&lt;patient id&gt;</code>. Step 1 uses the patient ID, step 2 the case ID.</li>
+    <li>Step 4 uses the MRN and visit contact number from step 2, and the order IDs from step 3.</li>
+    <li>Orders are matched to TIVA drugs by name using each drug&#8217;s <code>Medication_Search_Terms</code> (every term must appear in the name, and a term starting with <code>!</code> must not). See <a href="client.html#dashboard">client.html &sect; Dashboard</a>.</li>
+    <li>The dashboard repeats the whole load every 5 minutes so new doses appear during the case.</li>
+  </ul>
+  <p>The client does not call the EHR itself. It calls TIVA&#8217;s generic API, for example <code>GET /REST/Api/FHIR/GetVitalSigns?patient=...</code>.</p>
+
+  <h3>What the API does with one call</h3>
+  <p>Take <code>FHIR/GetVitalSigns</code>:</p>
+  <ol>
+    <li>The generic handler (<code>ApiController</code>) looks up <code>FHIR/GetVitalSigns</code> in the endpoint cache and checks that the caller&#8217;s role is allowed.</li>
+    <li>The endpoint&#8217;s <code>Credential_Source</code> is <code>UserSession</code>, so the API first <strong>refreshes the EHR token</strong> if it is older than <code>Ehr:TokenRefreshMinutes</code>. If the user has no session (the API was restarted, or the session expired), the call fails with <code>Authentication Token Invalid</code>.</li>
+    <li>It reads the property named by <code>Credential_Key</code> (<code>FhirAccessToken</code>) from the user&#8217;s server-side session and uses it as the <strong>bearer token</strong>.</li>
+    <li>It builds the URL: the URL base named by <code>URL_Base</code> (here <code>EhrFHIR</code>, looked up in <code>admin.Application_Lists</code>) + the endpoint&#8217;s <code>URL</code>:
+<pre><code>https://ehr.example.org/Interconnect/  +  api/FHIR/R4/Observation</code></pre></li>
+    <li>It adds the parameters defined for the endpoint (<code>api.EndpointParameters</code>). Here the client sends <code>patient</code>; the others are fixed by the row:
+<pre><code>?patient=&lt;id&gt;&amp;category=vital-signs&amp;code=11,14</code></pre></li>
+    <li>It sends the request with <code>Authorization: Bearer &lt;EHR access token&gt;</code> and returns the EHR&#8217;s response to the client.</li>
+  </ol>
+  <p>The browser never receives the EHR tokens.</p>
+
+  <!-- ===================================================================== 8 -->
+  <h2 id="configure-data">8. Configure the patient data</h2>
+
+  <h3>8.1 Set the EHR base URL</h3>
+  <p>All FHIR endpoints share one URL base. Each endpoint row&#8217;s <code>URL_Base</code> column holds a <strong>name</strong>, not a URL, and the real address is the <code>List_Value</code> of the <code>admin.Application_Lists</code> row with that name (<code>Category = 'APIEditor'</code>, <code>Section = 'URLBases'</code>, <code>List_Key</code> = the name). In the seed data the name is <code>EhrFHIR</code> and the value is a placeholder:</p>
+<pre><code>UPDATE admin.Application_Lists
+SET    List_Value = 'https://ehr.example.org/Interconnect/'
+WHERE  Category = 'APIEditor' AND Section = 'URLBases' AND List_Key = 'EhrFHIR';</code></pre>
+  <p>The name is only a label. Your database may use a different one (for example <code>MyHospitalFHIR</code>). Use the name your endpoints use:</p>
+<pre><code>SELECT DISTINCT URL_Base FROM api.Endpoints WHERE Endpoint_Name LIKE 'FHIR/%';</code></pre>
+  <p>Each name returned needs a matching <code>List_Key</code> row. If one is missing, calls fail with <code>URL Base Not Found</code>.</p>
+  <p>Keep the trailing <code>/</code> on the value: the endpoint URLs are appended directly, with no separator added.</p>
+  <div class="callout warn">
+    <p><strong>The URL base is cached in memory for up to 60 minutes (sliding), and <code>ReloadEndpoints</code> does not clear it.</strong> After changing it, recycle the API (restart the IIS app pool).</p>
+  </div>
+
+  <h3>8.2 Fill in the Epic web-service URLs</h3>
+  <p>Four of the seeded endpoints call standard FHIR and already have a URL. The other three call <strong>Epic&#8217;s proprietary web services</strong> (not standard FHIR) and are seeded with the placeholder <code>REPLACE_WITH_EPIC_API_PATH</code>:</p>
+  <div class="table-wrap">
+  <table>
+    <tr><th>Endpoint</th><th>Epic API it calls</th><th>Used by the dashboard</th></tr>
+    <tr><td><code>FHIR/GetSurgicalCase</code></td><td><code>GetSurgicalRecord</code> (Specialty, Surgery)</td><td>Yes (step 2)</td></tr>
+    <tr><td><code>FHIR/GetMedicationAdministration</code></td><td><code>GetMedicationAdministrationHistory</code> (Clinical, Patient)</td><td>Yes (step 4)</td></tr>
+    <tr><td><code>FHIR/GetFlowSheetRow</code></td><td><code>GetFlowsheetRows</code> (Clinical, Patient)</td><td>No. Seeded but not called by the dashboard.</td></tr>
+  </table>
+  </div>
+  <p>Find each API&#8217;s path in your Epic documentation (<a href="https://open.epic.com">open.epic.com</a> or your site&#8217;s Interconnect API list), using the version your Epic supports. The path is relative to the URL base from 8.1:</p>
+<pre><code>UPDATE api.Endpoints
+SET    URL = '&lt;path from your Epic documentation&gt;'
+WHERE  Endpoint_Name = 'FHIR/GetSurgicalCase';</code></pre>
+  <p>The standard FHIR endpoints are <code>FHIR/GetVitalSigns</code> (<code>api/FHIR/R4/Observation</code>) and <code>FHIR/GetMedicationStatements</code> (<code>api/FHIR/STU3/MedicationStatement</code>). Also seeded: <code>FHIR/GetMedication</code> and <code>FHIR/GetMedicationRequest</code>. The dashboard does not call those two. Change any of the paths if your EHR uses different ones.</p>
+  <div class="callout">
+    <p><strong>A different EHR.</strong> Only Epic is supported out of the box. The two required web-service endpoints, a surgical case record and medication administrations, return Epic-shaped JSON that the client parses in <code>searchFHIR()</code>. An EHR with different services needs equivalent endpoints and, if the response shape differs, changes to that client code.</p>
+  </div>
+
+  <h3>8.3 Check the endpoint parameters</h3>
+  <p>Each endpoint&#8217;s request is defined by rows in <code>api.EndpointParameters</code>. For each parameter the row says:</p>
+  <ul>
+    <li><strong>Where it goes</strong>: <code>Parameter</code> (query string), <code>Body</code> (JSON body of a POST), or <code>URL</code> (appended to the path).</li>
+    <li><strong>Who supplies it</strong>: either the client (it must send it, or the call fails with <code>Missing Required Parameters</code>), or the <em>system</em> (a fixed value stored on the row).</li>
+    <li>A <strong>template</strong> with <code>{var}</code> as the value. For example <code>gt{var}</code> turns <code>2026-01-01</code> into <code>gt2026-01-01</code>, and <code>{"ID":"{var}","Type":"Internal"}</code> builds an object for APIs that want IDs as objects.</li>
+    <li>For lists, a <strong>delimiter</strong> (<code>|</code>): <code>OrderIDs</code> is sent as <code>a|b|c</code> and expanded to a list of objects.</li>
+    <li>A flag that fills the parameter with the <strong>signed-in user&#8217;s TIVA user name</strong>. The Epic <code>UserID</code> parameters use it, and the companion <code>UserIDType</code> parameter is a fixed value, <code>systemlogin</code>.</li>
+  </ul>
+  <p>The seeded rows were exported from a working Epic setup. Compare them with the request body in your Epic documentation and edit any that differ (the comment above each placeholder row in <code>SeedData.sql</code> says the same). The client sends these names, so keep them: <code>patient</code> and <code>effective</code> (statements), <code>SurgicalRecordID</code> (case), and <code>PatientID</code>, <code>ContactID</code> and <code>OrderIDs</code> (administrations).</p>
+  <p>The data model and the editing endpoints are described in <a href="api.html#endpoint-engine">api.html &sect; Endpoint engine</a>. <code>api/TIVA_API/examples/ExportEhrEndpoints.sql</code> exports all the FHIR rows from a working database, to copy to another site.</p>
+
+  <h3>8.4 Check who can call the endpoints</h3>
+  <p>Access is controlled by <code>api.EndpointSecurity</code>. The seed grants the FHIR endpoints to the <strong>Administrator</strong> (1) and <strong>User</strong> (2) roles. Users created by the EHR login get <code>Ehr:User:DefaultRoleId</code> (default <code>2</code>), so they can call them. If you change the default role, check that it is still allowed.</p>
+
+  <h3>8.5 Reload the endpoints</h3>
+  <p>After editing endpoint rows (URLs, parameters, security), call <code>POST /REST/Admin/ReloadEndpoints</code> as an administrator, or recycle the API. This reloads <code>api.Endpoints</code>, <code>EndpointParameters</code> and <code>EndpointSecurity</code> into memory.</p>
+
+  <h3>8.6 Map your EHR&#8217;s labels (<code>Ehr:DataMapping</code>)</h3>
+  <p>The client finds the values it needs by matching text in the EHR&#8217;s responses. The defaults are for Epic&#8217;s naming; your EHR may use different names.</p>
+  <div class="table-wrap">
+  <table>
+    <tr><th>Setting</th><th>Default</th><th>What the client looks for</th></tr>
+    <tr><td><code>WeightLabel</code></td><td><code>Weight</code></td><td>The vital-signs <code>Observation</code> whose <code>code.text</code> is this. Unit <code>kg</code> is kept as kg; any other unit is treated as lb.</td></tr>
+    <tr><td><code>HeightLabel</code></td><td><code>Height</code></td><td>The same, for height. Unit <code>cm</code> is kept as cm; any other unit is treated as inches.</td></tr>
+    <tr><td><code>AnesthesiaStartEvent</code></td><td><code>Anesthesia Start</code></td><td>The surgical-case timing event whose <code>Title</code> is this. Its <code>StartDateTime</code> becomes the anesthesia start.</td></tr>
+    <tr><td><code>AnesthesiaStopEvent</code></td><td><code>Anesthesia Stop</code></td><td>The same, for the end. If there is none, the case&#8217;s discharge time is used instead.</td></tr>
+    <tr><td><code>ProcedurePafIndex</code></td><td><code>1</code></td><td>Which entry of the case&#8217;s <code>PAFValues</code> list holds the procedure name.</td></tr>
+  </table>
+  </div>
+  <p>To find the right values for your site, make one call from a test launch (<a href="#test">section 9</a>) and read the response in the browser&#8217;s network tab: look at the <code>code.text</code> of the Observations and the <code>Title</code> of the timing events. If anesthesia start is not found, the dashboard shows &#8220;Anesthesia Start is not detected. Please relaunch from the EHR&#8221;.</p>
+  <p>These settings are in the API&#8217;s <code>Ehr</code> section, but they are read by the client: it fetches them from <code>GET /REST/ehr/client-config</code> and keeps them until the page is reloaded.</p>
+
+  <!-- ===================================================================== 9 -->
+  <h2 id="test">9. Test it</h2>
+  <p>Work through these in order. Each step tests the one before it.</p>
+  <ol>
+    <li><strong>API is up.</strong> <code>GET /REST/Admin/Health</code> returns <code>Healthy</code>.</li>
+    <li><strong>Settings are loaded.</strong> <code>GET /REST/ehr/client-config</code> returns <code>Enabled: true</code> and your <code>DisplayName</code> and <code>DataMapping</code>. This route exists even when the EHR is disabled, so check the values. If you get <code>Enabled: false</code>, or the default <code>DisplayName</code> of <code>EHR</code> when you set another, the <code>Ehr</code> section is not being read: check which config file the server uses (<a href="#before-you-start">section 2</a>).</li>
+    <li><strong>Keys are published.</strong> <code>GET /REST/.well-known/jwks.json</code> lists two keys: your EHR key with the <code>kid</code> you set in <code>Ehr:ClientAssertion:Kid</code>, and the API token key. If the EHR key is missing, <code>Ehr:ClientAssertion:PublicCertificate</code> is empty.</li>
+    <li><strong>Launch.</strong> Open a test patient&#8217;s case in the EHR&#8217;s non-production environment and click the TIVA link. Watch the browser&#8217;s address bar: you should pass through the EHR, then <code>/REST/ehr/callback</code>, <code>auth/ehrloading</code> and <code>/REST/ehr/complete</code>, and end on the dashboard.</li>
+    <li><strong>Login result.</strong> A successful login appears in <code>api.UserLogin_Log</code> (with the source set to your <code>DisplayName</code>). A failure sends you to the <code>Failure</code> page; the reason is in the error log (written by <code>api.SaveErrorLog</code>).</li>
+    <li><strong>Data.</strong> Open the browser&#8217;s developer tools, Network tab, and look at the calls to <code>/REST/Api/FHIR/...</code> after the dashboard opens. Each response has <code>bSuccess</code>, <code>sErrorInfo</code> and <code>oReturnObject</code>. Check them in order: vital signs, then surgical case, medication statements and administrations. The dashboard fills in as each one succeeds.</li>
+    <li><strong>Token refresh.</strong> Keep the dashboard open for longer than <code>TokenRefreshMinutes</code>. The next 5-minute reload should still work, which shows the token refresh does.</li>
+  </ol>
+  <div class="callout warn">
+    <p>For development only, with <code>Environment</code> set to <code>Development</code> (never in production), <code>GET /REST/Admin/RestoreSession?username=&lt;user&gt;</code> restores the cookies of a user whose session is cached, so you can reopen the dashboard without launching from the EHR again.</p>
+  </div>
+
+  <!-- ===================================================================== 10 -->
+  <h2 id="troubleshooting">10. Troubleshooting</h2>
+
+  <h3>Login</h3>
+  <div class="table-wrap">
+  <table>
+    <tr><th>What you see</th><th>Likely cause</th></tr>
+    <tr><td><code>/ehr/launch</code> returns 404</td><td><code>Ehr:Enabled</code> is not <code>true</code>, or the path differs from <code>Ehr:Routes</code>.</td></tr>
+    <tr><td>HTTP 403 &#8220;Launch issuer not allowed&#8221;</td><td>The launch <code>iss</code> is not in <code>Ehr:AllowedIssuers</code>. The exact value is in the error log.</td></tr>
+    <tr><td>500 &#8220;Internal Auth Security Error:&#8221; at launch</td><td>The metadata could not be downloaded, or no authorize URL was found in it. Check <code>{iss}/metadata</code>, <code>MetadataHeaders</code>, and <code>EndpointDiscovery</code> (try <code>ByIndex</code>).</td></tr>
+    <tr><td>The EHR shows an error before returning to TIVA</td><td>The registration does not match: <code>RedirectUrl</code>, <code>ClientId</code>, scopes or launch URL. The error is shown by the EHR.</td></tr>
+    <tr><td>500 &#8220;Failed to pull identifier&#8221; at <code>ehr/complete</code></td><td>The code cookie did not arrive. Check HTTPS, that <code>AppSettings:COOKIE_DOMAIN</code> matches the host, and that the browser is not blocking cookies. Opening <code>ehr/complete</code> directly, without going through the callback, also causes this.</td></tr>
+    <tr><td>500 &#8220;Internal Auth Error:&#8221; at <code>ehr/complete</code></td><td>The token exchange failed; the log has &#8220;EHR token exchange failed&#8221; and the status. Common causes: the EHR does not accept the client assertion (wrong key pair, <code>Kid</code> or <code>Algorithm</code>, or the JWK Set URL is not reachable by the EHR), the <code>RedirectUrl</code> differs from the one used at launch, or the code was already used or has expired.</td></tr>
+    <tr><td>Redirected to the <code>Failure</code> page; log says &#8220;EHR Authentication failed&#8221;</td><td>The <code>id_token</code> failed validation: <code>Issuer</code> or <code>ClientId</code> does not match, or <code>JwksUrl</code> is wrong.</td></tr>
+    <tr><td>Redirected to the <code>Failure</code> page; log says &#8220;User not found&#8221;</td><td>The claim named by <code>ClaimType</code> is missing, or no user matches and <code>AutoCreate</code> is <code>false</code>. Decode the <code>id_token</code> to see what the EHR sends.</td></tr>
+    <tr><td>Logged in, but no patient data (log line &#8220;EHR launch state not found or expired&#8221;)</td><td>More than 10 minutes passed between launch and completion, or the API was restarted in between. Relaunch.</td></tr>
+    <tr><td>Logged out after a while</td><td>Sessions live in memory and expire after 60 minutes without use. Restarting or recycling the API ends all sessions. EHR users relaunch from the EHR.</td></tr>
+  </table>
+  </div>
+
+  <h3>Patient data</h3>
+  <div class="table-wrap">
+  <table>
+    <tr><th>What you see</th><th>Likely cause</th></tr>
+    <tr><td><code>Authentication Token Invalid</code></td><td>The user&#8217;s session is gone (the API was restarted) or the user did not log in through the EHR. Relaunch from the EHR.</td></tr>
+    <tr><td><code>Failed to refresh FHIR token. Session may be invalid.</code></td><td>The EHR rejected the refresh. Check the log line &#8220;FHIR token refresh failed&#8221; for the status. <code>Ehr:MetadataUrl</code> must be set, because the refresh needs it.</td></tr>
+    <tr><td><code>URL Base Not Found</code></td><td>There is no <code>admin.Application_Lists</code> row (<code>APIEditor</code> / <code>URLBases</code>) whose <code>List_Key</code> matches the endpoint&#8217;s <code>URL_Base</code> name (see 8.1).</td></tr>
+    <tr><td><code>Missing Required Parameters: ...</code></td><td>The client did not send a parameter the endpoint requires. Compare the endpoint&#8217;s parameter rows with the client function.</td></tr>
+    <tr><td>The call succeeds but the response is an EHR error message</td><td>The API only treats &#8220;no response at all&#8221; as a failure. An HTTP 401, 403 or 404 from the EHR is returned as the response body with <code>bSuccess</code> true. Read <code>oReturnObject</code>. Typical causes are a wrong URL or base URL, a missing scope or API access on the registration, or wrong parameters.</td></tr>
+    <tr><td>Changes to the URL base have no effect</td><td>The URL base is cached. Recycle the API.</td></tr>
+    <tr><td>Changes to endpoint rows have no effect</td><td>Call <code>POST /Admin/ReloadEndpoints</code>.</td></tr>
+    <tr><td>The dashboard stays empty after login</td><td>The load stops at the first incomplete step (<a href="#data-flow">section 7</a>). Check the Network tab to find which call returned nothing. Usually a <code>DataMapping</code> label does not match, so weight or height is not found.</td></tr>
+    <tr><td>&#8220;Anesthesia Start is not detected&#8221;</td><td><code>AnesthesiaStartEvent</code> does not match a timing event <code>Title</code>, or the event has not been documented yet.</td></tr>
+    <tr><td>Some drugs are missing</td><td>The drug&#8217;s <code>Medication_Search_Terms</code> do not match the order name in the EHR, or the infusion is not yet validated in the EHR.</td></tr>
+  </table>
+  </div>
+
+  <!-- ===================================================================== 11 -->
+  <h2 id="code-map">11. Where things are defined</h2>
+  <p>Paths are relative to the repository root.</p>
+  <div class="table-wrap">
+  <table>
+    <tr><th>What</th><th>Where</th></tr>
+    <tr><td>Login routes (<code>Launch</code>, <code>Callback</code>, <code>Complete</code>, <code>StandaloneLaunch</code>, <code>StandaloneCallback</code>)</td><td><code>api/TIVA_API/Controllers/EhrOAuthController.cs</code></td></tr>
+    <tr><td>How route paths are registered from <code>Ehr:Routes</code> (only when <code>Ehr:Enabled</code>)</td><td><code>api/TIVA_API/Startup.cs</code>, <code>MapEhrRoutes</code></td></tr>
+    <tr><td><code>GET ehr/client-config</code> and <code>GET /.well-known/jwks.json</code></td><td><code>api/TIVA_API/Controllers/EhrOAuthController.cs</code> (<code>EhrClientConfigController</code>, <code>JwksController</code>)</td></tr>
+    <tr><td>Metadata download and caching, authorize/token URL discovery, issuer check, code exchange, token refresh, user mapping, client assertion</td><td><code>api/TIVA_API/Helpers/SmartOnFhirService.cs</code></td></tr>
+    <tr><td>All <code>Ehr:*</code> settings and their defaults</td><td><code>api/TIVA_API/Models/EhrSettings.cs</code></td></tr>
+    <tr><td><code>id_token</code> signature, issuer and audience validation</td><td><code>api/TIVA_API/Models/Authentication.cs</code>, <code>AuthenticateEhrIdTokenAsync</code></td></tr>
+    <tr><td>Client assertion JWT, metadata request, creating a TIVA user</td><td><code>api/TIVA_API/Helpers/GeneralUtil.cs</code></td></tr>
+    <tr><td>The server-side session (TIVA tokens and EHR tokens), OAuth state, metadata cache</td><td><code>api/TIVA_API/Helpers/SessionCache.cs</code>, <code>Session.cs</code></td></tr>
+    <tr><td>The generic endpoint route, token refresh before each EHR call, URL and parameter building, bearer token</td><td><code>api/TIVA_API/Controllers/APIController.cs</code> (class <code>ApiController</code>), <code>HandleApiRestCall</code></td></tr>
+    <tr><td>Endpoint definitions</td><td>Database: <code>api.Endpoints</code>, <code>api.EndpointParameters</code>, <code>api.EndpointSecurity</code>. Seed: <code>api/TIVA_API/examples/SeedData.sql</code></td></tr>
+    <tr><td>URL bases</td><td>Database: <code>admin.Application_Lists</code> (<code>APIEditor</code> / <code>URLBases</code>)</td></tr>
+    <tr><td><code>POST /Admin/ReloadEndpoints</code></td><td><code>api/TIVA_API/Controllers/AdminController.cs</code></td></tr>
+    <tr><td>Client pages for the login</td><td><code>client/app/auth/ehrloading/page.tsx</code>, <code>client/app/auth/ehrlaunch/page.tsx</code></td></tr>
+    <tr><td>Client calls to the API and the data load</td><td><code>client/api/ehr-api.tsx</code>, <code>client/lib/med-helpers.tsx</code> (<code>searchFHIR</code>), <code>client/components/dashboard/Dashboard.tsx</code></td></tr>
+    <tr><td>Settings templates</td><td><code>api/deploy/appsettings.example.json</code>, <code>api/deploy/web.config.example</code>, <code>client/.env.example</code></td></tr>
+  </table>
+  </div>
+
+  <h3>Hosting notes</h3>
+  <ul>
+    <li>The API keeps sessions (including EHR tokens), OAuth state, the URL base and the endpoint cache in memory. Run it as a single instance: one server and one IIS worker process. Restarting or recycling the API signs EHR users out, and they relaunch from the EHR.</li>
+    <li>The login log (<code>api.UserLogin_Log</code>) stores patient identifiers from the launch. Treat the database as holding protected health information.</li>
+  </ul>
+
+  <footer>tiva-open-source workspace docs</footer>
+</main>
+</body>
+</html>

@@ -1,0 +1,139 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Example IIS web.config for the TIVA site root on a single Windows server. Goes next to the client's server.js.
+  Replace the placeholder values, then keep this file out of source control (it holds secrets).
+
+  Layout:
+    Site root (this web.config)  build of the client/ folder, run by iisnode through server.js
+    /REST application            publish output of the api/ folder (dotnet publish) in its own folder and app pool
+
+  - "/"      -> iisnode runs server.js (the Next.js server) for everything that is not a real file
+  - "/REST"  -> the API. Its settings are the MA_* variables in the <location path="REST"> block below, so a new
+                `dotnet publish` (which rewrites the API's own web.config) does not remove them.
+  - "/docs"  -> optional static documentation site (the repository's docs/ folder), added in IIS as a virtual
+                directory of this site. It is excluded from the server.js rewrite rule below.
+
+  The variables are every setting in deploy/appsettings.example.json: Section:Key becomes MA_Section__Key and
+  list items get an index (MA_Ehr__User__StripPrefixes__0). If appsettings.json also sets a value, the value
+  in this web.config is used (IIS passes these entries to the API as environment variables).
+  Line breaks in PEM keys are written as &#10;.
+
+  Requirements: IIS URL Rewrite, iisnode, the ASP.NET Core Hosting Bundle and Node.js.
+  API app pool: No Managed Code, Maximum Worker Processes = 1 (sessions and caches are held in memory).
+
+  Empty optional settings are left out. Add an MA_ variable for any of these you need:
+          MA_AppSettings__SERVER_IP
+          MA_AppSettings__SERVER_CONTEXT
+          MA_AppSettings__ADMIN
+          MA_Ehr__StandaloneRedirectUrl
+          MA_Ehr__StandaloneAuthorizeUrl
+          MA_Ehr__ClientRoutes__StandaloneLaunched
+          MA_Smtp__Username
+          MA_Smtp__Password
+-->
+<configuration>
+  <system.webServer>
+    <handlers>
+      <add name="iisnode" path="server.js" verb="*" modules="iisnode" />
+    </handlers>
+    <rewrite>
+      <rules>
+        <clear />
+        <rule name="DynamicContent">
+          <conditions logicalGrouping="MatchAll" trackAllCaptures="false">
+            <add input="{REQUEST_FILENAME}" matchType="IsFile" negate="true" />
+            <add input="{REQUEST_URI}" pattern="^/(REST|docs(/|$))" negate="true" />
+          </conditions>
+          <action type="Rewrite" url="server.js" />
+        </rule>
+      </rules>
+    </rewrite>
+  </system.webServer>
+
+  <location path="REST">
+    <system.webServer>
+      <aspNetCore>
+        <environmentVariables>
+          <environmentVariable name="ASPNETCORE_ENVIRONMENT" value="Production" />
+          <environmentVariable name="MA_Logging__LogLevel__Default" value="Information" />
+          <environmentVariable name="MA_Logging__LogLevel__Microsoft" value="Warning" />
+          <environmentVariable name="MA_Logging__LogLevel__Microsoft.Hosting.Lifetime" value="Information" />
+          <environmentVariable name="MA_AllowedHosts" value="tiva.example.org" />
+          <!-- Never set MA_Environment to Development on a server: test accounts then sign in without a password. Keep ASPNETCORE_ENVIRONMENT at Production too (Development turns on Swagger and stack traces). -->
+          <environmentVariable name="MA_Environment" value="Production" />
+          <environmentVariable name="MA_DatabaseSettings__DEFAULT" value="Data Source=tcp:sql.example.org;Initial Catalog=TIVA;Integrated Security=True;Pooling=true;Max Pool Size=50;" />
+          <environmentVariable name="MA_AppSettings__SQL_TIMEOUT" value="60" />
+          <environmentVariable name="MA_AppSettings__APP_NAME" value="TIVA" />
+          <environmentVariable name="MA_AppSettings__ADMIN_EMAIL" value="tiva-admin@example.org" />
+          <environmentVariable name="MA_AppSettings__SECRET_KEY" value="&lt;AES key, see examples/GenerateAESKey.ps1&gt;" />
+          <environmentVariable name="MA_AppSettings__DEBUG" value="false" />
+          <environmentVariable name="MA_AppSettings__SITE_URL" value="https://tiva.example.org" />
+          <environmentVariable name="MA_AppSettings__COOKIE_DOMAIN" value="tiva.example.org" />
+          <environmentVariable name="MA_AppSettings__RECAPTCHA_SECRET_KEY" value="&lt;Google reCAPTCHA secret key, pairs with the client's NEXT_PUBLIC_RECAPTCHA_SITE_KEY&gt;" />
+          <environmentVariable name="MA_AppSettings__AUTH_JKU_URL" value="https://tiva.example.org/REST/.well-known/jwks.json" />
+          <environmentVariable name="MA_JwtAuthentication__SecurityKey" value="&lt;random 32 character string&gt;" />
+          <environmentVariable name="MA_JwtAuthentication__ValidAudience" value="https://tiva.example.org/" />
+          <environmentVariable name="MA_JwtAuthentication__ValidIssuer" value="https://tiva.example.org/" />
+          <environmentVariable name="MA_JwtAuthentication__JWT_PRIVATE_KEY" value="-----BEGIN PRIVATE KEY-----&#10;&lt;key used to sign TIVA tokens&gt;&#10;-----END PRIVATE KEY-----" />
+          <environmentVariable name="MA_JwtAuthentication__JWT_PUBLIC_KEY" value="-----BEGIN CERTIFICATE-----&#10;&lt;X.509 certificate for JWT_PRIVATE_KEY&gt;&#10;-----END CERTIFICATE-----" />
+          <environmentVariable name="MA_JwtAuthentication__Kid" value="tiva-api-auth" />
+          <environmentVariable name="MA_Ehr__Enabled" value="true" />
+          <environmentVariable name="MA_Ehr__DisplayName" value="EHR" />
+          <environmentVariable name="MA_Ehr__ClientId" value="&lt;client ID from the EHR vendor app registration&gt;" />
+          <environmentVariable name="MA_Ehr__Issuer" value="https://ehr.example.org/oauth2" />
+          <environmentVariable name="MA_Ehr__JwksUrl" value="https://ehr.example.org/oauth2/jwks" />
+          <environmentVariable name="MA_Ehr__MetadataUrl" value="https://ehr.example.org/api/FHIR/R4/metadata" />
+          <environmentVariable name="MA_Ehr__AllowedIssuers__0" value="https://ehr.example.org/api/FHIR/R4" />
+          <environmentVariable name="MA_Ehr__RedirectUrl" value="https://tiva.example.org/REST/ehr/callback" />
+          <environmentVariable name="MA_Ehr__LaunchScope" value="openid fhirUser profile launch" />
+          <environmentVariable name="MA_Ehr__StandaloneScope" value="openid fhirUser profile" />
+          <environmentVariable name="MA_Ehr__EndpointDiscovery" value="ByUrl" />
+          <environmentVariable name="MA_Ehr__MetadataHeaders__Epic-Client-ID" value="{ClientId}" />
+          <environmentVariable name="MA_Ehr__TokenRefreshMinutes" value="45" />
+          <environmentVariable name="MA_Ehr__Routes__Launch" value="ehr/launch" />
+          <environmentVariable name="MA_Ehr__Routes__Callback" value="ehr/callback" />
+          <environmentVariable name="MA_Ehr__Routes__Complete" value="ehr/complete" />
+          <environmentVariable name="MA_Ehr__Routes__StandaloneLaunch" value="ehr/standalone" />
+          <environmentVariable name="MA_Ehr__Routes__StandaloneCallback" value="ehr/standalone/callback" />
+          <environmentVariable name="MA_Ehr__ClientRoutes__Loading" value="auth/ehrloading" />
+          <environmentVariable name="MA_Ehr__ClientRoutes__Launched" value="auth/ehrlaunch" />
+          <environmentVariable name="MA_Ehr__ClientRoutes__Failure" value="Search" />
+          <environmentVariable name="MA_Ehr__ClientAssertion__PrivateKey" value="-----BEGIN PRIVATE KEY-----&#10;&lt;key TIVA signs EHR requests with&gt;&#10;-----END PRIVATE KEY-----" />
+          <environmentVariable name="MA_Ehr__ClientAssertion__PublicCertificate" value="-----BEGIN CERTIFICATE-----&#10;&lt;X.509 certificate for PrivateKey, shared with the EHR vendor&gt;&#10;-----END CERTIFICATE-----" />
+          <environmentVariable name="MA_Ehr__ClientAssertion__Kid" value="ehr" />
+          <environmentVariable name="MA_Ehr__ClientAssertion__IncludeKidHeader" value="true" />
+          <environmentVariable name="MA_Ehr__ClientAssertion__Algorithm" value="RS384" />
+          <environmentVariable name="MA_Ehr__ClientAssertion__LifetimeMinutes" value="2" />
+          <environmentVariable name="MA_Ehr__LaunchParameters__CaseId" value="SurgeryID" />
+          <environmentVariable name="MA_Ehr__LaunchParameters__FirstName" value="ReporterFirstName" />
+          <environmentVariable name="MA_Ehr__LaunchParameters__LastName" value="ReporterLastName" />
+          <environmentVariable name="MA_Ehr__User__ClaimType" value="preferred_username" />
+          <environmentVariable name="MA_Ehr__User__Lowercase" value="false" />
+          <environmentVariable name="MA_Ehr__User__AutoCreate" value="true" />
+          <environmentVariable name="MA_Ehr__User__DefaultRoleId" value="2" />
+          <environmentVariable name="MA_Ehr__StandaloneUser__ClaimType" value="preferred_username" />
+          <environmentVariable name="MA_Ehr__StandaloneUser__Lowercase" value="true" />
+          <environmentVariable name="MA_Ehr__StandaloneUser__AutoCreate" value="false" />
+          <environmentVariable name="MA_Ehr__StandaloneUser__DefaultRoleId" value="2" />
+          <environmentVariable name="MA_Ehr__DataMapping__WeightLabel" value="Weight" />
+          <environmentVariable name="MA_Ehr__DataMapping__HeightLabel" value="Height" />
+          <environmentVariable name="MA_Ehr__DataMapping__AnesthesiaStartEvent" value="Anesthesia Start" />
+          <environmentVariable name="MA_Ehr__DataMapping__AnesthesiaStopEvent" value="Anesthesia Stop" />
+          <environmentVariable name="MA_Ehr__DataMapping__ProcedurePafIndex" value="1" />
+          <environmentVariable name="MA_Ldap__Enabled" value="false" />
+          <environmentVariable name="MA_Ldap__Host" value="ldap.example.org" />
+          <environmentVariable name="MA_Ldap__Port" value="636" />
+          <environmentVariable name="MA_Ldap__UseSsl" value="true" />
+          <environmentVariable name="MA_Ldap__BaseDn" value="dc=example,dc=org" />
+          <environmentVariable name="MA_Ldap__UserFilter" value="(uid={0})" />
+          <environmentVariable name="MA_Ldap__BindDnTemplate" value="cn={0},ou=people,{1}" />
+          <environmentVariable name="MA_Smtp__Enabled" value="false" />
+          <environmentVariable name="MA_Smtp__Host" value="smtp.example.org" />
+          <environmentVariable name="MA_Smtp__Port" value="25" />
+          <environmentVariable name="MA_Smtp__UseSsl" value="false" />
+          <environmentVariable name="MA_Smtp__From" value="tiva@example.org" />
+        </environmentVariables>
+      </aspNetCore>
+    </system.webServer>
+  </location>
+</configuration>

@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TIVA — EHR Launch Flow</title>
+<link rel="stylesheet" href="assets/docs.css">
+<script src="assets/nav.js" defer></script>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="index.html">&larr; Docs index</a></div>
+  <h1>TIVA — EHR Launch Flow</h1>
+  <p>What happens when TIVA is launched from an EHR with SMART on FHIR (tested with Epic): launch &rarr; authorize &rarr; callback &rarr; <code>/auth/ehrloading</code> &rarr; complete &rarr; <code>/auth/ehrlaunch</code> &rarr; dashboard FHIR data pull.</p>
+</header>
+
+<main>
+  <div class="callout">
+    <p>This page explains the code. The setup guide (EHR registration, key pair, every <code>Ehr:*</code> setting, patient data endpoints, troubleshooting) is <a href="ehr-setup.html">ehr-setup.html</a>. Route paths below are the defaults of <code>Ehr:Routes</code> and <code>Ehr:ClientRoutes</code> in <code>api/deploy/appsettings.example.json</code>; a site can change them.</p>
+  </div>
+
+  <h2 id="sequence">Sequence</h2>
+  <div class="diagram">
+    <svg viewBox="0 0 900 780" width="900" height="780" role="img" aria-label="EHR launch sequence">
+      <defs>
+        <marker id="a3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="#1a4a7a"/>
+        </marker>
+      </defs>
+      <style>
+        .p { fill:#00274c; }
+        .pt { font: 700 12.5px -apple-system,Segoe UI,Roboto,sans-serif; fill:#ffcb05; }
+        .life { stroke:#b8c2d0; stroke-width:1.2; stroke-dasharray:4 4; }
+        .m { stroke:#1a4a7a; stroke-width:1.5; fill:none; }
+        .mt { font: 11.5px -apple-system,Segoe UI,Roboto,sans-serif; fill:#1a1a1a; }
+        .note { fill:#fff8e1; stroke:#f0c36d; stroke-width:1; }
+        .nt { font: 11px -apple-system,Segoe UI,Roboto,sans-serif; fill:#555; }
+        .n { font: 700 11px -apple-system,Segoe UI,Roboto,sans-serif; fill:#1a4a7a; }
+      </style>
+      <!-- participants -->
+      <rect class="p" x="20" y="10" width="150" height="30" rx="6"/><text class="pt" x="95" y="30" text-anchor="middle">EHR (Epic)</text>
+      <rect class="p" x="250" y="10" width="150" height="30" rx="6"/><text class="pt" x="325" y="30" text-anchor="middle">Browser</text>
+      <rect class="p" x="490" y="10" width="170" height="30" rx="6"/><text class="pt" x="575" y="30" text-anchor="middle">TIVA API (/REST)</text>
+      <rect class="p" x="740" y="10" width="140" height="30" rx="6"/><text class="pt" x="810" y="30" text-anchor="middle">Next.js client</text>
+      <line class="life" x1="95" y1="40" x2="95" y2="770"/>
+      <line class="life" x1="325" y1="40" x2="325" y2="770"/>
+      <line class="life" x1="575" y1="40" x2="575" y2="770"/>
+      <line class="life" x1="810" y1="40" x2="810" y2="770"/>
+
+      <!-- 1 -->
+      <path class="m" d="M95,70 L323,70" marker-end="url(#a3)"/>
+      <text class="mt" x="210" y="63" text-anchor="middle">1. user clicks TIVA link on a case</text>
+      <path class="m" d="M325,92 L573,92" marker-end="url(#a3)"/>
+      <text class="mt" x="450" y="85" text-anchor="middle">GET /REST/ehr/launch?iss&amp;launch&amp;SurgeryID&amp;names</text>
+      <rect class="note" x="590" y="100" width="290" height="58" rx="5"/>
+      <text class="n" x="600" y="116">API: Launch()</text>
+      <text class="nt" x="600" y="131">check iss in Ehr:AllowedIssuers; read {iss}/metadata;</text>
+      <text class="nt" x="600" y="145">state = new GUID; save case + names under state</text>
+      <!-- 2 -->
+      <path class="m" d="M573,176 L327,176" marker-end="url(#a3)"/>
+      <text class="mt" x="450" y="169" text-anchor="middle">2. 302 to EHR authorize URL</text>
+      <path class="m" d="M325,196 L97,196" marker-end="url(#a3)"/>
+      <text class="mt" x="210" y="189" text-anchor="middle">GET authorize?client_id&amp;scope&amp;launch&amp;aud&amp;state</text>
+      <!-- 3 -->
+      <path class="m" d="M95,232 L323,232" marker-end="url(#a3)"/>
+      <text class="mt" x="210" y="225" text-anchor="middle">3. 302 redirect_uri?code&amp;state</text>
+      <path class="m" d="M325,252 L573,252" marker-end="url(#a3)"/>
+      <text class="mt" x="450" y="245" text-anchor="middle">GET /REST/ehr/callback?code&amp;state</text>
+      <rect class="note" x="590" y="260" width="290" height="44" rx="5"/>
+      <text class="n" x="600" y="276">API: Callback()</text>
+      <text class="nt" x="600" y="291">code &#8594; HttpOnly cookie X-Identifier; state &#8594; X-Ehr-State</text>
+      <path class="m" d="M573,322 L327,322" marker-end="url(#a3)"/>
+      <text class="mt" x="450" y="315" text-anchor="middle">4. 302 to {site}/auth/ehrloading</text>
+      <!-- 5 -->
+      <path class="m" d="M325,350 L808,350" marker-end="url(#a3)"/>
+      <text class="mt" x="570" y="343" text-anchor="middle">GET /auth/ehrloading</text>
+      <rect class="note" x="640" y="358" width="240" height="44" rx="5"/>
+      <text class="n" x="650" y="374">Page: EhrLoading</text>
+      <text class="nt" x="650" y="389">ehr/client-config &#8594; CompletePath</text>
+      <path class="m" d="M808,420 L327,420" marker-end="url(#a3)"/>
+      <text class="mt" x="570" y="413" text-anchor="middle">5. router.push(API /ehr/complete)</text>
+      <path class="m" d="M325,440 L573,440" marker-end="url(#a3)"/>
+      <text class="mt" x="450" y="433" text-anchor="middle">GET /REST/ehr/complete (cookies sent)</text>
+      <!-- 6 -->
+      <path class="m" d="M573,472 L97,472" marker-end="url(#a3)"/>
+      <text class="mt" x="335" y="465" text-anchor="middle">6. POST token endpoint: code + signed JWT client assertion (RS384)</text>
+      <path class="m" d="M97,492 L573,492" marker-end="url(#a3)"/>
+      <text class="mt" x="335" y="509" text-anchor="middle">access_token, refresh_token, id_token, patient</text>
+      <rect class="note" x="590" y="500" width="290" height="94" rx="5"/>
+      <text class="n" x="600" y="516">API: Complete()</text>
+      <text class="nt" x="600" y="531">validate id_token (Ehr:JwksUrl, Issuer, ClientId)</text>
+      <text class="nt" x="600" y="545">map claim to TIVA user (create if Ehr:User:AutoCreate)</text>
+      <text class="nt" x="600" y="559">issue TIVA JWTs; keep EHR tokens in session cache</text>
+      <text class="nt" x="600" y="573">write login to api.UserLogin_Log</text>
+      <!-- 7 -->
+      <path class="m" d="M573,616 L327,616" marker-end="url(#a3)"/>
+      <text class="mt" x="450" y="609" text-anchor="middle">7. 302 {site}/auth/ehrlaunch + cookies</text>
+      <text class="nt" x="450" y="630" text-anchor="middle">cookies: X-Access-Token, X-Refresh-Token, X-Username, X-SurgicalID</text>
+      <path class="m" d="M325,664 L808,664" marker-end="url(#a3)"/>
+      <text class="mt" x="570" y="657" text-anchor="middle">GET /auth/ehrlaunch</text>
+      <path class="m" d="M808,692 L327,692" marker-end="url(#a3)"/>
+      <text class="mt" x="570" y="685" text-anchor="middle">8. router.push("/?fromEhr=true")</text>
+      <rect class="note" x="330" y="708" width="550" height="50" rx="5"/>
+      <text class="n" x="340" y="724">Dashboard (EHR mode)</text>
+      <text class="nt" x="340" y="739">server actions call API FHIR/* endpoints with the user's session; repeats every 5 min</text>
+    </svg>
+    <div class="caption">Browser hops are redirects or page navigations. Step 6 is a direct server-to-server call from the API to the EHR. The EHR never talks to the Next.js client, and the browser never sees the EHR tokens.</div>
+  </div>
+
+  <h2 id="steps">Step by step</h2>
+  <table>
+    <tr><th>#</th><th>Where</th><th>What</th></tr>
+    <tr><td>1</td><td><code>EhrOAuthController.Launch</code></td><td>The EHR opens <code>/REST/ehr/launch</code> with <code>iss</code>, <code>launch</code> and the case parameters named in <code>Ehr:LaunchParameters</code> (case ID, reporter first and last name). The API rejects issuers not in <code>Ehr:AllowedIssuers</code> (an empty list accepts all and logs a warning at start-up), reads the FHIR metadata at <code>{iss}/metadata</code> to find the authorize URL, saves <code>caseId|first|last</code> under a new random <code>state</code>, and redirects to the EHR authorize URL with <code>response_type=code</code>, <code>redirect_uri=Ehr:RedirectUrl</code>, <code>client_id</code>, <code>scope=Ehr:LaunchScope</code>, <code>launch</code>, <code>aud=iss</code> and <code>state</code>.</td></tr>
+    <tr><td>2</td><td>EHR</td><td>Authorizes the launch and redirects to <code>Ehr:RedirectUrl</code> with <code>code</code> and <code>state</code>.</td></tr>
+    <tr><td>3</td><td><code>EhrOAuthController.Callback</code></td><td>Stores the code in the HttpOnly cookie <code>X-Identifier</code> and the state in <code>X-Ehr-State</code>, then redirects to <code>{JwtAuthentication:ValidIssuer}{Ehr:ClientRoutes:Loading}</code>. <code>ValidIssuer</code> is therefore also the public site base URL and should end with <code>/</code>.</td></tr>
+    <tr><td>4</td><td><code>client/app/auth/ehrloading/page.tsx</code></td><td>Fetches <code>ehr/client-config</code> to learn <code>CompletePath</code> and sends the browser to <code>{NEXT_PUBLIC_EXTERNAL_API_BASE_URL}/{CompletePath}</code>, which completes the login on the API.</td></tr>
+    <tr><td>5</td><td><code>EhrOAuthController.Complete</code></td><td>Exchanges the code at the token endpoint (<code>SmartOnFhirService.ExchangeCode</code>), authenticating with a JWT signed by <code>Ehr:ClientAssertion:PrivateKey</code>. Validates the <code>id_token</code>. Looks up the state to recover the case ID and reporter name. Resolves the TIVA user with <code>ResolveUser</code>: take <code>Ehr:User:ClaimType</code>, strip one configured prefix, optionally lower-case, look the user up (then try each <code>FallbackSuffixes</code>), and create the user with <code>DefaultRoleId</code> when <code>AutoCreate</code> is on. Failures redirect to <code>Ehr:ClientRoutes:Failure</code>.</td></tr>
+    <tr><td>6</td><td><code>EhrOAuthController.SignIn</code></td><td>Builds the TIVA access and refresh JWTs, stores a <code>Session</code> (EHR id/access/refresh tokens, TIVA tokens, token time, surgical log ID) in the in-memory session cache, sets <code>X-Access-Token</code> and <code>X-Refresh-Token</code> (HttpOnly) and <code>X-Username</code>, and deletes the temporary <code>X-Identifier</code> and <code>X-Ehr-State</code> cookies. Cookies use <code>Secure</code>, <code>SameSite=None</code> and <code>AppSettings:COOKIE_DOMAIN</code>.</td></tr>
+    <tr><td>7</td><td><code>Complete</code> (end)</td><td>Logs the login (<code>api.Log_Login</code> &rarr; <code>api.UserLogin_Log</code>, including patient ID, MRN and reporter name), sets the readable cookie <code>X-SurgicalID</code> (<code>&lt;case id&gt;||&lt;patient id&gt;</code> for the client), and redirects to <code>Ehr:ClientRoutes:Launched</code>.</td></tr>
+    <tr><td>8</td><td><code>client/app/auth/ehrlaunch/page.tsx</code></td><td>Navigates to <code>/?fromEhr=true</code>.</td></tr>
+  </table>
+
+  <h3>Standalone launch</h3>
+  <p><code>GET /REST/ehr/standalone</code> sends a user to the EHR authorize page without a patient context (<code>Ehr:StandaloneScope</code>); <code>/REST/ehr/standalone/callback</code> exchanges the code, validates the <code>id_token</code>, resolves the user with <code>Ehr:StandaloneUser</code> (auto-create is off in the example) and redirects to <code>Ehr:ClientRoutes:StandaloneLaunched</code>. The redirect URI defaults to <code>{ValidIssuer}REST/{Routes:StandaloneCallback}</code> unless <code>Ehr:StandaloneRedirectUrl</code> is set.</p>
+
+  <h2 id="data">Dashboard data pull</h2>
+  <p>With <code>?fromEhr=true</code> the dashboard reads <code>ehr/client-config</code> (display name and <code>DataMapping</code>), then <code>searchFHIR()</code> (<code>client/lib/med-helpers.tsx</code>) splits the <code>X-SurgicalID</code> cookie into case ID and patient ID and calls these API endpoints:</p>
+  <table>
+    <tr><th>Order</th><th>Client call</th><th>API endpoint (<code>api.Endpoints</code>)</th><th>Used for</th></tr>
+    <tr><td>1</td><td><code>getFHIRVitalSigns</code> (<code>{ patient }</code>)</td><td><code>FHIR/GetVitalSigns</code> (GET, <code>api/FHIR/R4/Observation</code>)</td><td>Weight and height, matched by <code>DataMapping.WeightLabel</code> / <code>HeightLabel</code> (unit <code>kg</code> or else lb; <code>cm</code> or else inches). If either is missing the pull stops with an empty result.</td></tr>
+    <tr><td>2</td><td><code>getEhrSurgicalCase</code> (<code>{ SurgicalRecordID }</code>)</td><td><code>FHIR/GetSurgicalCase</code> (POST, Epic web service)</td><td>Patient name, sex, date of birth (age in years, or in months under 1 year) and MRN; procedure (<code>PAFValues[DataMapping.ProcedurePafIndex]</code>); operating room; the anesthesia start and stop timing events (<code>AnesthesiaStartEvent</code>, <code>AnesthesiaStopEvent</code>), with the discharge time as the end when there is no stop event.</td></tr>
+    <tr><td>3</td><td><code>getFHIRMedicationStatements</code> (<code>{ patient, effective }</code>)</td><td><code>FHIR/GetMedicationStatements</code> (GET, <code>api/FHIR/STU3/MedicationStatement</code>)</td><td>The patient's medication orders from 3 days before anesthesia start. An order is kept when its name matches a TIVA medication: <code>Medication_Search_Terms</code> is a comma-separated list; every term must appear in the name (case-insensitive), and a term starting with <code>!</code> must not appear.</td></tr>
+    <tr><td>4</td><td><code>getMedicationAdministrations</code> (<code>{ PatientID: MRN, ContactID: visit contact number, OrderIDs: ids joined by | }</code>)</td><td><code>FHIR/GetMedicationAdministration</code> (POST, Epic web service)</td><td>Administrations for the matched orders, kept only between anesthesia start and end, sorted by time, and merged per TIVA medication.</td></tr>
+  </table>
+  <p>These are rows in the database, not code. Each uses <code>Credential_Source = UserSession</code> and <code>Credential_Key = FhirAccessToken</code>: before the call the API refreshes the EHR token if it is older than <code>Ehr:TokenRefreshMinutes</code> (refresh-token grant with a client assertion), then sends the user's EHR access token as a bearer token to <code>{URL base}{URL}</code>. The browser never receives the EHR tokens. In the seed data the two Epic web-service endpoints have the placeholder URL <code>REPLACE_WITH_EPIC_API_PATH</code> and must be set per site. See <a href="api.html#endpoint-engine">api.html &sect; Endpoint engine</a>.</p>
+  <p>The dashboard repeats the pull every 5 minutes so new doses appear during the case. Administrations become dose rows with the mapping in <a href="client.html#dashboard">client.html &sect; Dashboard</a>.</p>
+
+  <h2 id="session">Session and hosting notes</h2>
+  <ul>
+    <li>Sessions (including EHR tokens), OAuth state and the endpoint cache are in process memory. Run the API as one instance; restarting it signs EHR users out and they relaunch from the EHR.</li>
+    <li>If <code>Ehr:Enabled</code> is false the EHR routes are not mapped at all.</li>
+    <li><code>GET /REST/.well-known/jwks.json</code> publishes both the EHR client-assertion public key and the API's token-signing key (matching <code>kid</code>s), so the EHR vendor can verify assertions and the Next.js client can verify TIVA tokens.</li>
+    <li><code>api.UserLogin_Log</code> stores patient identifiers from the launch. Treat the database as holding protected health information.</li>
+  </ul>
+
+  <footer>tiva-open-source workspace docs</footer>
+</main>
+</body>
+</html>

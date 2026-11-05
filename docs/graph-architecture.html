@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TIVA — Graph Architecture</title>
+<link rel="stylesheet" href="assets/docs.css">
+<script src="assets/nav.js" defer></script>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="index.html">&larr; Docs index</a></div>
+  <h1>TIVA — Graph Architecture</h1>
+  <p>How PK simulation output flows into the Plotly graph: data generation (<code>model/</code>, <code>lib/med-helpers.tsx</code>) to data visualization (<code>Graph.tsx</code>, <code>MedPlotly.tsx</code>).</p>
+</header>
+
+<main>
+  <h2 id="flow">End-to-end flow</h2>
+  <div class="diagram">
+    <svg viewBox="0 0 900 360" width="900" height="360" role="img" aria-label="Graph data flow">
+      <defs>
+        <marker id="a2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="#1a4a7a"/>
+        </marker>
+      </defs>
+      <style>
+        .b { fill:#fff; stroke:#1a4a7a; stroke-width:1.5; }
+        .g { fill:#f4f7fb; stroke:#9cc0e8; stroke-width:1.2; stroke-dasharray:6 4; }
+        .h { fill:#00274c; }
+        .t { font: 600 12.5px -apple-system,Segoe UI,Roboto,sans-serif; fill:#00274c; }
+        .s { font: 11.5px -apple-system,Segoe UI,Roboto,sans-serif; fill:#555; }
+        .th { font: 700 12px -apple-system,Segoe UI,Roboto,sans-serif; fill:#ffcb05; }
+        .gl { font: 700 12px -apple-system,Segoe UI,Roboto,sans-serif; fill:#1a4a7a; }
+        .l { stroke:#1a4a7a; stroke-width:1.5; fill:none; }
+      </style>
+      <rect class="g" x="8" y="8" width="548" height="344" rx="10"/>
+      <text class="gl" x="20" y="28">Data generation</text>
+      <rect class="g" x="570" y="8" width="322" height="344" rx="10"/>
+      <text class="gl" x="582" y="28">Data visualization</text>
+
+      <rect class="b" x="24" y="44" width="160" height="62" rx="8"/>
+      <text class="t" x="104" y="66" text-anchor="middle">Inputs</text>
+      <text class="s" x="104" y="83" text-anchor="middle">age, weight, height, sex</text>
+      <text class="s" x="104" y="98" text-anchor="middle">dose rows, reference time</text>
+
+      <rect class="b" x="24" y="132" width="160" height="62" rx="8"/>
+      <text class="t" x="104" y="154" text-anchor="middle">Meds/GetDrugModels</text>
+      <text class="s" x="104" y="171" text-anchor="middle">core.GetMedicationModels</text>
+      <text class="s" x="104" y="186" text-anchor="middle">&rarr; Vc, k10..k31, ke0</text>
+
+      <rect class="b" x="212" y="88" width="170" height="62" rx="8"/>
+      <text class="t" x="297" y="110" text-anchor="middle">refreshData()</text>
+      <text class="s" x="297" y="127" text-anchor="middle">lib/med-helpers.tsx</text>
+      <text class="s" x="297" y="142" text-anchor="middle">units, EHR/MPOG extra time</text>
+
+      <rect class="b" x="212" y="176" width="170" height="78" rx="8"/>
+      <text class="t" x="297" y="198" text-anchor="middle">processTCI()</text>
+      <text class="s" x="297" y="215" text-anchor="middle">expand rows, 1 s Euler loop</text>
+      <text class="s" x="297" y="230" text-anchor="middle">pkSimIterate() per second</text>
+      <text class="s" x="297" y="245" text-anchor="middle">cut at reference time</text>
+
+      <rect class="b" x="404" y="132" width="140" height="94" rx="8"/>
+      <text class="t" x="474" y="154" text-anchor="middle">tciMap[drug]</text>
+      <text class="s" x="474" y="171" text-anchor="middle">t[] (min)</text>
+      <text class="s" x="474" y="186" text-anchor="middle">Cp[], Ce[] (tci_unit)</text>
+      <text class="s" x="474" y="201" text-anchor="middle">pkModel, amounts</text>
+      <text class="s" x="474" y="216" text-anchor="middle">Dashboard state</text>
+
+      <rect class="b" x="24" y="280" width="358" height="56" rx="8"/>
+      <text class="t" x="203" y="302" text-anchor="middle">Side effect: API/Logs/SaveGraphLog</text>
+      <text class="s" x="203" y="319" text-anchor="middle">inputs, dose tables, reference time, max time &rarr; api.Graph_Logs</text>
+
+      <rect class="b" x="586" y="44" width="290" height="62" rx="8"/>
+      <text class="t" x="731" y="66" text-anchor="middle">Graph.tsx (one per drug)</text>
+      <text class="s" x="731" y="83" text-anchor="middle">condenseArray (&le; 1000 points)</text>
+      <text class="s" x="731" y="98" text-anchor="middle">t &rarr; Date = reference time + minutes</text>
+
+      <rect class="b" x="586" y="132" width="290" height="78" rx="8"/>
+      <text class="t" x="731" y="154" text-anchor="middle">Traces and layout</text>
+      <text class="s" x="731" y="171" text-anchor="middle">Cp orange, Ce blue</text>
+      <text class="s" x="731" y="186" text-anchor="middle">solid = history, dotted = last maxTime min</text>
+      <text class="s" x="731" y="201" text-anchor="middle">optional Lower..Upper target band</text>
+
+      <rect class="b" x="586" y="236" width="290" height="62" rx="8"/>
+      <text class="t" x="731" y="258" text-anchor="middle">MedPlotly.tsx</text>
+      <text class="s" x="731" y="275" text-anchor="middle">dynamic import, ssr:false</text>
+      <text class="s" x="731" y="290" text-anchor="middle">Plotly.newPlot / purge on change</text>
+
+      <rect class="b" x="586" y="312" width="290" height="32" rx="8"/>
+      <text class="s" x="731" y="332" text-anchor="middle">MedicationGraphModal (full size, PNG)</text>
+
+      <path class="l" d="M104,106 L104,130" marker-end="url(#a2)"/>
+      <path class="l" d="M184,163 L210,130" marker-end="url(#a2)"/>
+      <path class="l" d="M184,75 C198,75 205,100 210,112" marker-end="url(#a2)"/>
+      <path class="l" d="M297,150 L297,174" marker-end="url(#a2)"/>
+      <path class="l" d="M382,215 C395,215 395,190 402,184" marker-end="url(#a2)"/>
+      <path class="l" d="M544,175 C560,175 565,80 584,76" marker-end="url(#a2)"/>
+      <path class="l" d="M731,106 L731,130" marker-end="url(#a2)"/>
+      <path class="l" d="M731,210 L731,234" marker-end="url(#a2)"/>
+      <path class="l" d="M731,298 L731,310" marker-end="url(#a2)"/>
+      <path class="l" d="M297,254 L297,278" marker-end="url(#a2)"/>
+    </svg>
+    <div class="caption">The simulation runs entirely in the browser. The only server calls on this path are drug-model parameters (before) and the graph log (after).</div>
+  </div>
+
+  <h2 id="generation">Data generation</h2>
+  <ol>
+    <li><strong>Drug models.</strong> <code>Dashboard.refreshDrugModels()</code> posts age (years), height (cm), weight (kg) and sex (<code>m</code>/<code>f</code>) to <code>Meds/GetDrugModels</code>. The database returns one row per model with <code>Vc</code> (L), <code>k01</code>, <code>k10</code>, <code>k12</code>, <code>k13</code>, <code>k21</code>, <code>k31</code>, <code>ke0</code> (1/min), <code>tci_unit</code>, <code>default_model</code> and an <code>error</code> text when a model's stored procedure is missing. See <a href="pk-models.html">pk-models.html</a>.</li>
+    <li><strong>Dose tables.</strong> A <code>DoseTable</code> per drug holds the chosen model and rows (<code>Bolus</code>, <code>Start Infusion</code>, <code>Dose Change</code>, <code>Stop Infusion</code>). Rows come from user input or from EHR/MPOG data (<code>createDoseTableEntries</code>, <code>prepareMPOGData</code>). Each table owns a <code>TCI</code> state created by <code>initTCI(model)</code>.</li>
+    <li><strong>Refresh.</strong> <code>refreshDataHandler()</code> &rarr; <code>refreshData()</code>. It drops tables in a failed state, resets every table's <code>TCI</code>, then calls <code>processTCI()</code> per drug. In EHR or MPOG mode it passes extra minutes (<code>minMissing</code>) so a still-running infusion is simulated up to now or the anesthesia end.</li>
+    <li><strong>Simulation.</strong> <code>processTCI()</code> appends one sample per simulated second to <code>tci.t</code> (minutes), <code>tci.Cp</code> and <code>tci.Ce</code> (converted to the model's <code>tci_unit</code>: mcg/mL or ng/mL). Details: <a href="simulation-algorithm.html">simulation-algorithm.html</a>.</li>
+    <li><strong>Trimming.</strong> If the reference time is later than the first dose, samples before it are removed so the graph starts at the reference time. If the first dose is later than the reference time, a zero-rate infusion row is inserted to fill the gap.</li>
+    <li><strong>Logging.</strong> After computing, the dashboard posts the inputs and dose tables to <code>API/Logs/SaveGraphLog</code> (<code>api.LogGraph</code> &rarr; <code>api.Graph_Logs</code>).</li>
+  </ol>
+
+  <h2 id="visualization">Data visualization</h2>
+  <ol>
+    <li><strong>Down-sampling.</strong> <code>condenseArray()</code> keeps at most 1000 evenly spaced samples of <code>t</code>, <code>Cp</code> and <code>Ce</code>.</li>
+    <li><strong>Time axis.</strong> Each sample time in minutes becomes <code>new Date(referenceTime + minutes * 60000)</code>.</li>
+    <li><strong>Solid vs dotted.</strong> The sample closest to <code>(last time &minus; maxTime minutes)</code> splits the series. Earlier samples are drawn as solid splines; the last <code>maxTime</code> minutes (the projection after the last recorded dose, set by &ldquo;Time (min) Into Future to Generate&rdquo;) are drawn dotted.</li>
+    <li><strong>Traces.</strong> Cp is orange, Ce is blue, both named &ldquo;Plasma Concentration (Cp)&rdquo; and &ldquo;Effect Concentration (Ce)&rdquo;. Each can be hidden with the graph options (<code>plasmaStyle</code>, <code>effectSiteStyle</code> = <code>Show</code>/<code>Hide</code>).</li>
+    <li><strong>Target band.</strong> With <code>concentrationTarget = Show</code> a translucent rectangle spans the medication's <code>Lower</code> to <code>Upper</code> values (from <code>core.Medications</code>).</li>
+    <li><strong>Layout.</strong> Y axis titled <code>Concentration (&lt;tci_unit&gt;)</code>, starting at zero; title is the drug name (with the model name in full-size view); modebar hidden; responsive.</li>
+    <li><strong>Rendering.</strong> <code>MedPlotly</code> loads <code>plotly.js-dist-min</code> with <code>next/dynamic</code> and <code>ssr: false</code>, calls <code>newPlot</code> whenever data, layout or config change and <code>purge</code> on cleanup, and shows a spinner while drawing.</li>
+    <li><strong>Interaction.</strong> &ldquo;Preview Changes&rdquo; opens <code>MedicationGraphModal</code> (full size, editable dose table, reference-time picker, PNG capture with <code>html2canvas</code>). Users with the <code>ExportGraphToFileButton</code> permission also get &ldquo;Export to File&rdquo;, which downloads the Plotly trace data as JSON.</li>
+  </ol>
+
+  <div class="callout">
+    <p><strong>Concentration units.</strong> The simulation works in mg and mL internally. <code>cnvtTCIUnits</code> multiplies mg/mL by 1,000 (mcg/mL) or 1,000,000 (ng/mL) depending on the model's <code>tci_unit</code>. The axis label shows the same unit.</p>
+  </div>
+
+  <footer>tiva-open-source workspace docs</footer>
+</main>
+</body>
+</html>

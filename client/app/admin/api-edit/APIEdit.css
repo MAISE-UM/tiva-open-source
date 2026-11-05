@@ -1,0 +1,137 @@
+.text-center {
+    display: flex;
+    justify-content: center;
+    align-content: center;
+    flex-direction: column;
+}
+
+.input-center {
+    text-align: center;
+}
+
+.add-button {
+    padding: 0 0.75rem;
+    margin-left: 1rem;
+}
+
+.delete-button {
+    padding: 0 0.75rem;
+    margin-right: 1rem;
+}
+
+.text-center2 {
+    display: flex;
+    justify-content: center;
+    align-content: center;
+    flex-direction: column;
+}
+
+.box-header {
+    background-color: gray;
+    height: 2rem;
+}
+
+.box-body {
+    height: 2rem;
+}
+
+.box-row {
+    display: flex;
+    justify-content: center;
+    margin-top: 0.5rem;
+}
+
+.box-row-sp {
+    display: flex;
+    justify-content: center;
+    margin-top: 0.5rem;
+    margin-bottom: 0.5rem;
+}
+
+.box-row2 {
+    display: flex;
+    justify-content: center;
+    margin-bottom: 0.5rem;
+}
+
+.small-box {
+    width: 18%;
+    background-color: lightgrey;
+    /*margin-right: 1rem;*/
+}
+
+.medium-box {
+    width: 33%;
+    background-color: lightgrey;
+    /*margin-right: 1rem;*/
+}
+
+.param-name-box {
+    width: 25%;
+    background-color: lightgrey;
+    /*margin-right: 1rem;*/
+}
+
+.mini-box {
+    width: 10%;
+    background-color: lightgrey;
+    /*margin-right: 1rem;*/
+}
+
+.large-box {
+    width: 80%;
+    background-color: lightgrey;
+    /*margin-right: 1rem;*/
+}
+
+.security-box {
+    width: 50%;
+    background-color: lightgrey;
+    /*margin-right: 1rem;*/
+}
+
+.line-through {
+    text-decoration: line-through;
+}
+
+.line-through-disable {
+    pointer-events: none;
+    opacity: 0.4;
+}
+
+.black-border{
+  border: 1px solid black;
+}
+
+.orange-border{
+  border: 4px solid orange;
+}
+
+.red-border{
+  border: 4px solid red;
+}
+/* Custom styles for react-select */
+.react-select-container .react-select__control {
+    @apply bg-white border border-gray-300 rounded-md shadow-sm;
+}
+
+.react-select-container .react-select__menu {
+    @apply bg-white border border-gray-300 rounded-md shadow-lg;
+}
+
+.react-select-container .react-select__option {
+    @apply text-gray-800 hover:bg-gray-100;
+}
+
+.react-select-container .react-select__multi-value {
+    @apply bg-gray-100 rounded;
+}
+
+.react-select-container .react-select__multi-value__label {
+    @apply text-black;
+}
+
+.react-select-container .react-select__multi-value__remove {
+    @apply text-gray-500 hover:text-gray-700 hover:bg-gray-200;
+}
+

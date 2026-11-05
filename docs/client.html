@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TIVA — Client Reference</title>
+<link rel="stylesheet" href="assets/docs.css">
+<script src="assets/nav.js" defer></script>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="index.html">&larr; Docs index</a></div>
+  <h1>TIVA — Client Reference</h1>
+  <p>Developer reference for the Next.js client in <code>client/</code>: routes, request handling, server actions, components, simulation code, configuration and tests.</p>
+</header>
+
+<main>
+  <div class="toc">
+    <a href="#overview">Overview</a>
+    <a href="#routes">Routes</a>
+    <a href="#proxy">proxy.ts</a>
+    <a href="#api-layer">API layer</a>
+    <a href="#cookies">Cookies</a>
+    <a href="#dashboard">Dashboard</a>
+    <a href="#model">model/</a>
+    <a href="#types">Key types</a>
+    <a href="#config">Configuration</a>
+    <a href="#deploy">Build and deploy</a>
+    <a href="#tests">Tests</a>
+    <a href="#layout">Folder layout</a>
+  </div>
+
+  <h2 id="overview">Overview</h2>
+  <p>Package <code>tiva-client</code> (GPL-3.0-or-later). Next.js 16 with the App Router and Turbopack in development, React 19, TypeScript 5, Tailwind CSS 3 with <code>tailwindcss-animate</code>, Radix UI primitives wrapped in <code>components/ui/*</code> (shadcn style, see <code>components.json</code>), Plotly via <code>plotly.js-dist-min</code>. Path alias <code>@/*</code> maps to the client root.</p>
+  <p>Server actions accept request bodies up to 3 MB (<code>next.config.ts</code>, <code>serverActions.bodySizeLimit</code>), which matters because graph logs post the full dose tables.</p>
+
+  <h2 id="routes">Routes</h2>
+  <div class="table-wrap">
+  <table>
+    <tr><th>Path</th><th>File</th><th>Purpose</th></tr>
+    <tr><td><code>/</code></td><td><code>app/page.tsx</code></td><td>Dashboard (<code>components/dashboard/Dashboard.tsx</code>). <code>/?fromEhr=true</code> is EHR mode. <code>/?MPOG_CASE_ID=&hellip;</code> loads a case via the MPOG endpoint.</td></tr>
+    <tr><td><code>/auth/login</code></td><td><code>app/auth/login/page.tsx</code></td><td>Username and password form. Calls <code>Auth/AuthenticateUser</code> (LDAP, see <a href="auth-and-permissions.html">auth-and-permissions.html</a>), then goes to <code>/</code>.</td></tr>
+    <tr><td><code>/auth/logout</code></td><td><code>app/auth/logout/page.tsx</code></td><td>Clears the auth cookies (<code>logout()</code> in <code>app/utils/auth.ts</code>) and offers a link back to login. <code>proxy.ts</code> redirects here when the refresh token is missing or invalid.</td></tr>
+    <tr><td><code>/auth/ehrloading</code></td><td><code>app/auth/ehrloading/page.tsx</code></td><td>Landing page after the EHR OAuth callback. Reads <code>CompletePath</code> from <code>ehr/client-config</code> and navigates the browser to <code>{NEXT_PUBLIC_EXTERNAL_API_BASE_URL}/{CompletePath}</code>.</td></tr>
+    <tr><td><code>/auth/ehrlaunch</code></td><td><code>app/auth/ehrlaunch/page.tsx</code></td><td>Landing page after EHR login completes. Redirects to <code>/?fromEhr=true</code>.</td></tr>
+    <tr><td><code>/disclaimercaptcha</code></td><td><code>app/disclaimercaptcha/page.tsx</code></td><td>Disclaimer agreement and Google reCAPTCHA (<code>components/shared/disclaimer-captcha.tsx</code>). Posts to <code>recaptcha/verify/</code>.</td></tr>
+    <tr><td><code>/reports</code></td><td><code>app/reports/page.tsx</code></td><td>Internal login report (<code>API/Report/InternalUser</code>, Excel export via ExcelJS) and an optional embedded external report (<code>NEXT_PUBLIC_EXTERNAL_REPORT_URL</code>).</td></tr>
+    <tr><td><code>/admin/user-admin</code></td><td><code>app/admin/user-admin/</code></td><td>List, edit, add and delete users and their roles.</td></tr>
+    <tr><td><code>/admin/api-edit</code></td><td><code>app/admin/api-edit/</code></td><td>Endpoint editor: edit REST and stored-procedure endpoints, parameters and role security, review a diff of changes, save, then reload the API's endpoint cache.</td></tr>
+    <tr><td><code>/admin/health</code></td><td><code>app/admin/health/page.tsx</code></td><td>Unauthenticated &ldquo;The app is up and running!&rdquo; page for the client side.</td></tr>
+    <tr><td><code>/404</code></td><td><code>app/404/page.tsx</code></td><td>Not-found page. <code>proxy.ts</code> sends users here for routes their permissions do not include.</td></tr>
+  </table>
+  </div>
+  <p class="small muted">Which routes a given user may open is decided by the database (<code>admin.Application_Functions</code> rows of type <code>Route</code>), not by the client. See <a href="#proxy">proxy.ts</a>.</p>
+
+  <h2 id="proxy">proxy.ts (route guard)</h2>
+  <p>Next.js 16 runs <code>proxy.ts</code> before each request that matches <code>/((?!api|_next/static|_next/image|favicon.ico).*)</code>. It does the following:</p>
+  <ol>
+    <li><strong>Skip list.</strong> Paths containing <code>auth</code>, <code>404</code>, <code>images</code> or <code>admin/health</code> are let through.</li>
+    <li><strong>Authentication.</strong> <code>refreshTokenInit()</code> checks the <code>X-Refresh-Token</code> cookie and verifies it against the API's JWKS (RS384, <code>jose</code>). Missing or invalid means a redirect to <code>{NEXT_PUBLIC_LAUNCH_BASE_URL}/auth/logout</code>.</li>
+    <li><strong>Permissions.</strong> It reads the username from the refresh token, then calls <code>getUserPermissions(username)</code> (<code>GET API/Admin/GetUserPermissions/{user}</code>), which returns rows of type <code>Route</code> and non-route rows (buttons, dropdowns and so on).</li>
+    <li><strong>Per-route cookie.</strong> For a path such as <code>/admin/api-edit</code> it builds the chain <code>Shared</code>, <code>admin</code>, <code>api-edit</code> and keeps the permission rows whose <code>Route</code> matches, so common items are defined once under the <code>Shared</code> route. The result is written to the readable <code>user-permissions</code> cookie. <code>/</code> is treated as <code>/Dashboard</code>.</li>
+    <li><strong>Route check.</strong> If no <code>Route</code> row has a <code>Function_Details</code> equal to the requested path, the user is redirected to <code>/404</code>.</li>
+  </ol>
+  <p>On the browser side, <code>PermissionProvider</code> (<code>app/contexts/PermissionContext.tsx</code>) verifies the access token (<code>jwtPayload()</code>) and reads the cookie on every path change; <code>usePermissions()</code> exposes <code>{ userPayload, permissions }</code>. <code>LayoutProvider</code> and <code>useLayoutToggle(header, footer)</code> let a page hide the shared header or footer.</p>
+
+  <h2 id="api-layer">API layer (server actions)</h2>
+  <p>All files in <code>client/api/</code> are <code>'use server'</code> modules. Components import them like normal functions; they run on the Next.js server.</p>
+
+  <h3>api-wrapper.tsx</h3>
+  <ul>
+    <li><code>fetch_api_wrapper(type, path, parameters, body, needsAuth, cacheType, includeCredentials)</code>: builds <code>{NEXT_PUBLIC_API_BASE_URL}/{path}</code>, adds query parameters, sends the body for POST, and adds <code>Authorization: Bearer &lt;X-Access-Token&gt;</code> when <code>needsAuth</code> is true.</li>
+    <li>Any 401 response is turned into <code>TokenExpired</code>. The wrapper then POSTs to <code>Auth/RefreshTokenUser</code> with the <code>X-Refresh-Token</code> as the bearer token, copies the <code>Set-Cookie</code> headers into the Next.js cookie store, reads the new access token and retries the original request once. 401/403 from the refresh call throws <code>UnableToRefreshToken</code>. Other non-2xx responses throw <code>RequestFailed</code>. The wrapper returns <code>{ data }</code> on success or <code>{ error }</code> on failure.</li>
+    <li><code>axios_post_api_wrapper</code>: a multipart <code>FormData</code> POST variant with the same refresh handling.</li>
+  </ul>
+
+  <h3>Server-action modules</h3>
+  <div class="table-wrap">
+  <table>
+    <tr><th>File</th><th>Functions and API path</th></tr>
+    <tr><td><code>auth-api.tsx</code></td><td><code>login</code> &rarr; <code>POST Auth/AuthenticateUser</code>; <code>VerifyRecaptcha</code> &rarr; <code>POST recaptcha/verify/</code></td></tr>
+    <tr><td><code>ehr-api.tsx</code></td><td><code>getEhrClientConfig</code> &rarr; <code>GET ehr/client-config</code> (cached in memory after first success; defaults when the API is unreachable); <code>getEhrSurgicalCase</code> &rarr; <code>POST API/FHIR/GetSurgicalCase</code>; <code>getMedicationAdministrations</code> &rarr; <code>POST API/FHIR/GetMedicationAdministration</code>; <code>getFHIRMedicationStatements</code> &rarr; <code>GET API/FHIR/GetMedicationStatements</code>; <code>getFHIRVitalSigns</code> &rarr; <code>GET API/FHIR/GetVitalSigns</code>; <code>getFHIRMedication</code> &rarr; <code>GET API/FHIR/GetMedication</code>; <code>getMedications</code> &rarr; <code>GET API/Meds/GetMedications</code>; <code>getDrugModels</code> &rarr; <code>POST API/Meds/GetDrugModels</code>; <code>getGetCaseFromMPOG</code> &rarr; <code>POST API/MPOG/GetCaseFromMPOG</code></td></tr>
+    <tr><td><code>admin-api.tsx</code></td><td><code>getUserRoles</code>, <code>getUsersByRole</code>, <code>editUser</code>, <code>deleteUser</code>, <code>addEndpoint</code>, <code>updateEndpoint</code>, <code>addParameter</code>, <code>updateParameter</code>, <code>addSecurityRole</code>, <code>updateSecurityRole</code>, <code>getUserPermissions</code> &rarr; <code>API/Admin/&hellip;</code></td></tr>
+    <tr><td><code>api-api.tsx</code></td><td><code>getDBEndpoints</code> &rarr; <code>API/Admin/GetDBEndpoints</code>; <code>getApplicationLists</code> &rarr; <code>API/Admin/GetApplicationLists</code>; <code>getCurrentAPIEndpoints</code> &rarr; <code>Admin/GetCurrentEndpoints</code>; <code>reloadDBEndpoints</code> &rarr; <code>Admin/ReloadEndpoints</code></td></tr>
+    <tr><td><code>lists-api.tsx</code></td><td><code>getLists</code> &rarr; <code>API/Lists/GetLists</code> (dose-table event and unit lists, graph style options)</td></tr>
+    <tr><td><code>logs-api.tsx</code></td><td><code>setErrorLog</code>, <code>saveUserLog</code>, <code>saveDebugLog</code>, <code>sendEmail</code>, <code>saveGraphLog</code> &rarr; <code>API/Logs/&hellip;</code></td></tr>
+    <tr><td><code>report-api.tsx</code></td><td><code>getUserReportRows</code> &rarr; <code>API/Report/InternalUser</code></td></tr>
+  </table>
+  </div>
+  <p class="small muted">Which of these are defined in the seeded endpoint data is cross-checked in <a href="api.html#client-calls">api.html &sect; Client call sites</a>.</p>
+
+  <div class="callout">
+    <p><strong>Response envelope.</strong> The API returns <code>{ bSuccess, sErrorInfo, oReturnObject }</code> where <code>oReturnObject</code> is a JSON-encoded string. <code>processResponse&lt;T&gt;(raw)</code> (<code>lib/utils.ts</code>) parses it into <code>DataResponse&lt;T&gt;</code>. <code>processUserResponse</code> additionally splits the <code>Roles</code> string (pipe separated) into role options.</p>
+  </div>
+
+  <h2 id="cookies">Cookies used by the client</h2>
+  <div class="table-wrap">
+  <table>
+    <tr><th>Cookie</th><th>Set by</th><th>Meaning</th></tr>
+    <tr><td><code>X-Access-Token</code></td><td>API (HttpOnly)</td><td>Short-lived RS384 JWT (120 minutes). Sent as bearer token by <code>fetch_api_wrapper</code>.</td></tr>
+    <tr><td><code>X-Refresh-Token</code></td><td>API (HttpOnly)</td><td>Refresh JWT (480 minutes). Used by <code>proxy.ts</code> and the refresh flow.</td></tr>
+    <tr><td><code>X-Username</code></td><td>API</td><td>Lower-cased username, readable by the page.</td></tr>
+    <tr><td><code>user-permissions</code></td><td><code>proxy.ts</code></td><td>JSON <code>{ Routes, Permissions }</code> for the current route chain. Not HttpOnly so components can read it.</td></tr>
+    <tr><td><code>X-SurgicalID</code></td><td>API (EHR login)</td><td><code>&lt;surgicalLogId&gt;||&lt;patientId&gt;</code> for the launched case. Not HttpOnly. Read by <code>searchFHIR()</code> and, through <code>js-cookie</code>, when saving graph logs.</td></tr>
+    <tr><td><code>disclaimer_agreement</code>, <code>CAPTCHA_VALUE</code></td><td><code>lib/cookies.ts</code></td><td>Disclaimer agreed and captcha solved; set with a lifetime in hours.</td></tr>
+    <tr><td><code>redirectPath</code></td><td><code>lib/cookies.ts</code></td><td>Optional return path.</td></tr>
+  </table>
+  </div>
+
+  <h2 id="dashboard">Dashboard</h2>
+  <p><code>components/dashboard/Dashboard.tsx</code> owns the page state: patient covariates, reference time, <code>maxTime</code> (minutes of projection), the medication list, drug models, per-drug dose tables (<code>medTables</code>) and the computed simulation per drug (<code>tciMap</code>).</p>
+  <h3>Load sequence</h3>
+  <ol>
+    <li>On mount, <code>jwtPayload()</code> verifies the access token. Unless the host is in <code>NEXT_PUBLIC_CAPTCHA_DISABLED_HOSTS</code>, a user who has not agreed to the disclaimer or solved the captcha is sent to <code>/disclaimercaptcha</code>.</li>
+    <li><code>load()</code> &rarr; <code>loadMeds()</code> calls <code>getMedications()</code>. Each medication's comma-separated <code>Units</code> is split into infusion units (contain <code>min</code> or <code>hr</code>) and bolus units. Medications with <code>Load_Graph_Default</code> are graphed by default.</li>
+    <li>In EHR mode <code>searchFHIR()</code> (<code>lib/med-helpers.tsx</code>) reads the <code>X-SurgicalID</code> cookie, then calls vital signs (weight, height), <code>GetSurgicalCase</code> (patient, procedure, room, anesthesia start/stop) and medication orders/administrations. Labels come from <code>ehr/client-config</code> <code>DataMapping</code>. The result fills covariates and <code>referenceTime</code>.</li>
+    <li><code>refreshDrugModels()</code> calls <code>Meds/GetDrugModels</code> with age (years), height (cm), weight (kg) and sex. The database computes each model's <code>Vc</code>, <code>k10</code>, <code>k12</code>, <code>k21</code>, <code>k13</code>, <code>k31</code>, <code>ke0</code> (and <code>k01</code>) for that patient.</li>
+    <li><code>DoseSection</code> turns administrations into dose-table rows (<code>createDoseTableEntries</code>) using each drug's default model.</li>
+    <li><code>refreshDataHandler()</code> calls <code>refreshData()</code> which runs <code>processTCI()</code> for each dose table, stores the result in <code>tciMap</code>, then posts the inputs to <code>API/Logs/SaveGraphLog</code>.</li>
+    <li>In EHR mode a timer repeats the pull every 300,000 ms (5 minutes).</li>
+  </ol>
+  <h3>EHR administration &rarr; dose event mapping</h3>
+  <p><code>createDoseTableEntries()</code> maps the EHR <code>Action</code> of each administration:</p>
+  <table>
+    <tr><th>EHR Action</th><th>Dose-table event</th></tr>
+    <tr><td><code>New Bag</code>, <code>Infusion Continued</code>, <code>Restarted</code></td><td><code>Start Infusion</code> if none is running, otherwise <code>Dose Change</code></td></tr>
+    <tr><td>contains <code>Change</code></td><td><code>Dose Change</code></td></tr>
+    <tr><td><code>Stopped</code></td><td><code>Stop Infusion</code></td></tr>
+    <tr><td><code>Bolus</code>, <code>Given</code></td><td><code>Bolus</code> (run time fixed at 10 seconds)</td></tr>
+  </table>
+  <p>If an infusion is still running when anesthesia ends, a closing <code>Stop Infusion</code> row is added at the anesthesia end time. These action names are those of the EHR the code was written against; other EHRs may need changes in <code>med-helpers.tsx</code>.</p>
+
+  <h3>Components</h3>
+  <div class="table-wrap">
+  <table>
+    <tr><th>File (<code>components/dashboard/</code>)</th><th>Role</th></tr>
+    <tr><td><code>Dashboard.tsx</code></td><td>Page state, loading, refresh timer, layout.</td></tr>
+    <tr><td><code>subComponents/PatientCovariates.tsx</code></td><td>Age (years/months), weight (kg/lb), height (cm/inches), sex. <code>restrictions/patient.tsx</code> enforces height 10&ndash;200 cm and <code>PopoutWindow</code> shows the &ldquo;Input Warning&rdquo; dialog.</td></tr>
+    <tr><td><code>subComponents/DoseSection.tsx</code>, <code>DoseTableComponent.tsx</code></td><td>One tab per drug, add drug, choose PK model, edit rows (event, time, dose, unit).</td></tr>
+    <tr><td><code>subComponents/Graph.tsx</code>, <code>MedPlotly.tsx</code></td><td>Builds Plotly traces and layout, renders with <code>newPlot</code>. See <a href="graph-architecture.html">graph-architecture.html</a>.</td></tr>
+    <tr><td><code>subComponents/GraphOptions.tsx</code></td><td>Projection minutes, show/hide Ce and Cp, target-range shading, which drugs are graphed (option lists come from <code>Lists/GetLists</code>).</td></tr>
+    <tr><td><code>subComponents/MedicationGraphModal.tsx</code></td><td>Full-size graph dialog with an editable dose table, reference-time picker and PNG capture (<code>html2canvas</code>).</td></tr>
+    <tr><td><code>subComponents/MPOGSearchModal.tsx</code></td><td>Search by MPOG case ID. The trigger button is commented out in <code>Dashboard.tsx</code>; the feature still works from <code>?MPOG_CASE_ID=</code> if the database defines the endpoint.</td></tr>
+    <tr><td><code>subComponents/DebugSearch.tsx</code>, <code>Placeholder.tsx</code></td><td>Developer helpers (manual FHIR search form; empty placeholder).</td></tr>
+  </table>
+  </div>
+  <p>Shared pieces: <code>components/shared/*</code> (header, footer, user dropdown built from permissions, disclaimer/captcha, environment badge, date-time picker) and <code>components/ui/*</code> (Radix wrappers).</p>
+
+  <h2 id="model">model/ (PK simulation)</h2>
+  <p>Pure TypeScript functions with no network access. Full description: <a href="simulation-algorithm.html">simulation-algorithm.html</a>.</p>
+  <div class="table-wrap">
+  <table>
+    <tr><th>File</th><th>Function</th></tr>
+    <tr><td><code>processTCI.tsx</code></td><td>Entry point. Expands dose rows, runs the per-second loop, fills <code>tci.t</code>, <code>tci.Cp</code>, <code>tci.Ce</code>.</td></tr>
+    <tr><td><code>PKSimIterate.tsx</code></td><td>One 1-second Euler step of the 3-compartment + effect-site (+ absorption) model.</td></tr>
+    <tr><td><code>initTCI.tsx</code></td><td>Fresh <code>TCI</code> state (zero amounts, <code>t=[0]</code>).</td></tr>
+    <tr><td><code>getTPeak.tsx</code></td><td>Effect-site amount after a 1 mg bolus, second by second, until it peaks.</td></tr>
+    <tr><td><code>cnvtInfUnits.tsx</code>, <code>cnvBolusRate.tsx</code>, <code>cnvtTCIUnits.tsx</code>, <code>cnvtMgPerMl.tsx</code>, <code>getAmountInfused.tsx</code>, <code>mcgKgMinToMgMin.tsx</code></td><td>Unit conversions and amounts.</td></tr>
+    <tr><td><code>tciPlasmaIterate.tsx</code>, <code>tciEfctIterate.tsx</code></td><td>Plasma and effect-site target-controlled-infusion rate helpers (reachable only through <code>PlasmaTCI</code>/<code>EffectTCI</code> events, which the UI does not create).</td></tr>
+    <tr><td><code>calcAdjustedBodyWeight.tsx</code>, <code>prepareOutput.tsx</code></td><td>Helpers not referenced by the simulation path (the database computes adjusted body weight and lean body mass; see <a href="pk-models.html">pk-models.html</a>).</td></tr>
+  </table>
+  </div>
+
+  <h2 id="types">Key types (<code>app/utils/interfaces.ts</code>)</h2>
+<pre><code>PatientDemographics { weight, weightUnit, height, heightUnit, age, ageUnit, sex: 'm'|'f' }
+Amounts             { A0, A1, A2, A3, A4 }            // mg: absorption, central, 2 peripherals, effect site
+PKDrugModel         { Model_ID, Model_Name, Medication_Name, Vc (L), k01, k10, k12, k13, k21, k31, ke0 (1/min),
+                      tpeak[], tci_unit, default_model, error }
+TCI                 { pkModel, i, t[], tmin, Cp[], Ce[], amounts }
+DoseTableRow        { event, time, timeSinceFirstEvent, timeToRun, dose, unit }
+DoseTable           { med, model_id, model_name, model, rows[], tci, failure_reason }
+MedData             { sex/age/height/weight values and units, anesthesiaStart/End, medDataValue[], surgicalLog, ... }
+EhrClientConfig     { Enabled, DisplayName, CompletePath, DataMapping }</code></pre>
+  <p>The same file defines the FHIR and Epic response shapes (<code>VitalBundle</code>, <code>StatementBundle</code>, <code>SurgicalLog*</code>, <code>MedicationAdministration</code>) and the admin types (<code>User</code>, <code>Role</code>, <code>UserPermission</code>, <code>UserPermissionGroup</code>, <code>ApplicationListItem</code>).</p>
+
+  <h2 id="config">Configuration (<code>.env</code>)</h2>
+  <p>All variables are <code>NEXT_PUBLIC_*</code>, so they are baked into the build. Change them, then rebuild.</p>
+  <div class="table-wrap">
+  <table>
+    <tr><th>Variable</th><th>Purpose</th></tr>
+    <tr><td><code>NEXT_PUBLIC_ENVIRONMENT</code></td><td>Badge in the header (Development, Test, Production).</td></tr>
+    <tr><td><code>NEXT_PUBLIC_API_BASE_URL</code></td><td>API URL used by the Next.js server (server to server, may be internal).</td></tr>
+    <tr><td><code>NEXT_PUBLIC_EXTERNAL_API_BASE_URL</code></td><td>API URL used by the browser (for example <code>https://host/REST</code>). Used to complete the EHR login.</td></tr>
+    <tr><td><code>NEXT_PUBLIC_JKU_URL</code></td><td>The API's <code>/.well-known/jwks.json</code>, used to verify TIVA tokens. Required.</td></tr>
+    <tr><td><code>NEXT_PUBLIC_LAUNCH_BASE_URL</code></td><td>Public URL of the site, used for logout and 404 redirects.</td></tr>
+    <tr><td><code>NEXT_PUBLIC_RECAPTCHA_SITE_KEY</code></td><td>Google reCAPTCHA site key (pairs with the API's <code>RECAPTCHA_SECRET_KEY</code>).</td></tr>
+    <tr><td><code>NEXT_PUBLIC_CAPTCHA_DISABLED_HOSTS</code></td><td>Comma-separated <code>host[:port]</code> values where the captcha is skipped.</td></tr>
+    <tr><td><code>NEXT_PUBLIC_EMAIL_DOMAIN</code></td><td>Domain appended to usernames to build an email address.</td></tr>
+    <tr><td><code>NEXT_PUBLIC_EXTERNAL_REPORT_URL</code></td><td>Embedded report on the Reports page.</td></tr>
+    <tr><td><code>NEXT_PUBLIC_FEEDBACK_URL</code></td><td>Feedback link in the header.</td></tr>
+    <tr><td><code>NEXT_PUBLIC_ORGANIZATION_NAME</code></td><td>Copyright holder in the footer.</td></tr>
+    <tr><td><code>NODE_TLS_REJECT_UNAUTHORIZED=0</code></td><td>Development only: accept self-signed API certificates.</td></tr>
+  </table>
+  </div>
+
+  <h2 id="deploy">Build and deploy</h2>
+<pre><code>npm ci
+npm run build</code></pre>
+  <p>On IIS, copy <code>.next</code>, <code>public</code>, <code>package.json</code>, <code>package-lock.json</code>, <code>next.config.ts</code> and <code>server.js</code> to the site folder, run <code>npm ci --omit=dev</code> there, and use <code>api/deploy/web.config.example</code> as the site <code>web.config</code> (it routes <code>/REST</code> to the API and everything else to <code>server.js</code>). <code>server.js</code> forces <code>NODE_ENV=production</code>, creates a plain HTTP server around the Next.js request handler and listens on <code>PORT</code>, which iisnode supplies as a named pipe.</p>
+
+  <h2 id="tests">Tests</h2>
+  <p>Jest with <code>ts-jest</code> (<code>jest.config.js</code>, node environment, tests in <code>unit_tests/</code>, <code>@/</code> alias mapped). Run <code>npm test</code>, <code>npm run test:watch</code> or <code>npm run test:coverage</code>.</p>
+  <table>
+    <tr><th>Test file</th><th>Covers</th></tr>
+    <tr><td><code>PKSimIterate.test.ts</code></td><td>Exact compartment amounts for a 1 mg input, redistribution, steady state, the succinylcholine absorption path (<code>k01 &gt; 0</code>), mass balance, zero amounts.</td></tr>
+    <tr><td><code>getTPeak.test.ts</code></td><td>Time-to-peak arrays for propofol and fentanyl parameter sets.</td></tr>
+    <tr><td><code>cnvtInfUnits.test.ts</code></td><td>All infusion units to mcg/kg/min, clinical scenarios, edge cases.</td></tr>
+    <tr><td><code>cnvBolusRate.test.ts</code></td><td>mcg, mg, mg/kg, mcg/kg to mg, unknown units, missing weight.</td></tr>
+    <tr><td><code>cnvtTCIUnits.test.ts</code></td><td>mg/mL to mcg/mL and ng/mL.</td></tr>
+    <tr><td><code>getAmountInfused.test.ts</code></td><td>mg per time slice.</td></tr>
+  </table>
+  <p>There are no tests for <code>processTCI</code>, <code>tciEfctIterate</code>, <code>tciPlasmaIterate</code> or the UI. The README reports a comparison of the client's output with an Octave reference on 101 cases; that data is not in the repository.</p>
+
+  <h2 id="layout">Folder layout</h2>
+<pre><code>client/
+  api/            server actions (see above)
+  app/            App Router: pages, contexts, hooks, utils (auth.ts, interfaces.ts), globals.css
+  components/
+    dashboard/    Dashboard.tsx, subComponents/, restrictions/
+    shared/       header, footer, user dropdown, captcha, date-time picker, Plotly loader
+    ui/           Radix/shadcn primitives
+  lib/            cookies.ts, disclaimer.ts, med-helpers.tsx, utils.ts
+  model/          PK simulation functions
+  public/         images
+  unit_tests/     Jest tests
+  proxy.ts        auth + route permission guard
+  server.js       iisnode entry point
+  next.config.ts, tailwind.config.ts, postcss.config.mjs, tsconfig.json, eslint.config.mjs, jest.config.js</code></pre>
+
+  <footer>tiva-open-source workspace docs</footer>
+</main>
+</body>
+</html>

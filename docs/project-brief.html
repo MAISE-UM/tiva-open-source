@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TIVA — Project Brief</title>
+<link rel="stylesheet" href="assets/docs.css">
+<script src="assets/nav.js" defer></script>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="index.html">&larr; Docs index</a></div>
+  <h1>TIVA — Project Brief</h1>
+  <p>Purpose, scope, architecture and request path of the TIVA open-source repository.</p>
+</header>
+
+<main>
+  <h2 id="purpose">Purpose</h2>
+  <p>TIVA is a web application for simulating the plasma (Cp) and effect-site (Ce) concentrations of intravenous anesthetic drugs (propofol, opioids, benzodiazepines, neuromuscular blockers and dexmedetomidine) from a case's dosing history, using published pharmacokinetic (PK) models. A user enters boluses and continuous infusions, or has them loaded from an EHR, and TIVA draws the predicted concentrations over time.</p>
+
+  <div class="callout warn" id="disclaimer">
+    <p><strong>Clinical use disclaimer.</strong> TIVA is research and educational software. It is not a cleared or approved medical device, and it has not been validated for clinical decision-making or patient care.</p>
+    <ul>
+      <li>Do not use TIVA output to select, dose or titrate any drug for a patient.</li>
+      <li>The simulations are model predictions for a typical patient. Real concentrations vary between patients and can differ greatly from the model.</li>
+      <li>Results depend on the accuracy of the data entered or imported (doses, times, age, weight, height, sex). Check them.</li>
+      <li>Anyone who uses or deploys TIVA is responsible for validating it for their purpose and for complying with the regulations that apply to them.</li>
+      <li>The software is provided &ldquo;as is&rdquo;, without warranty of any kind.</li>
+    </ul>
+  </div>
+
+  <h2 id="repo">Repository layout</h2>
+  <table>
+    <tr><th>Path</th><th>What it is</th><th>Reference</th></tr>
+    <tr><td><code>client/</code></td><td>Next.js 16 / React 19 web client (TypeScript, Tailwind, Radix UI, Plotly)</td><td><a href="client.html">client.html</a>, <a href="client-brief.html">client-brief.html</a></td></tr>
+    <tr><td><code>api/TIVA_API/</code></td><td>ASP.NET Core (net10.0) REST API backed by SQL Server</td><td><a href="api.html">api.html</a></td></tr>
+    <tr><td><code>api/TIVA_API/examples/</code></td><td><code>CreateDB.sql</code> (schema), <code>SeedData.sql</code> (roles, endpoints, medications, models), export scripts, sample JS token-refresh caller</td><td><a href="database.html">database.html</a></td></tr>
+    <tr><td><code>api/deploy/</code></td><td><code>appsettings.example.json</code> and <code>web.config.example</code> (IIS)</td><td><a href="api.html#configuration">api.html &sect; Configuration</a></td></tr>
+    <tr><td><code>docs/ehr-setup.html</code></td><td>SMART on FHIR setup guide</td><td><a href="ehr-setup.html">ehr-setup.html</a>, <a href="ehr-launch-flow.html">ehr-launch-flow.html</a></td></tr>
+    <tr><td><code>docs/</code></td><td>This documentation site (static HTML, no build step to view)</td><td><a href="index.html">index.html</a></td></tr>
+  </table>
+
+  <h2 id="architecture">Architecture</h2>
+  <div class="diagram">
+    <svg viewBox="0 0 900 330" width="900" height="330" role="img" aria-label="TIVA system architecture">
+      <defs>
+        <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="#1a4a7a"/>
+        </marker>
+      </defs>
+      <style>
+        .b { fill:#fff; stroke:#1a4a7a; stroke-width:1.5; rx:8; }
+        .bh { fill:#00274c; }
+        .t { font: 600 13px -apple-system,Segoe UI,Roboto,sans-serif; fill:#00274c; }
+        .s { font: 11.5px -apple-system,Segoe UI,Roboto,sans-serif; fill:#555; }
+        .th { font: 700 12px -apple-system,Segoe UI,Roboto,sans-serif; fill:#ffcb05; }
+        .l { stroke:#1a4a7a; stroke-width:1.5; fill:none; }
+        .ld { stroke:#888; stroke-width:1.3; fill:none; stroke-dasharray:5 4; }
+      </style>
+      <!-- Browser -->
+      <rect class="b" x="10" y="110" width="150" height="110"/>
+      <rect class="bh" x="10" y="110" width="150" height="26" rx="8"/>
+      <text class="th" x="85" y="128" text-anchor="middle">Browser</text>
+      <text class="s" x="85" y="158" text-anchor="middle">React UI</text>
+      <text class="s" x="85" y="174" text-anchor="middle">PK simulation (client/model)</text>
+      <text class="s" x="85" y="190" text-anchor="middle">Plotly graph</text>
+      <text class="s" x="85" y="206" text-anchor="middle">user-permissions cookie</text>
+      <!-- Next.js -->
+      <rect class="b" x="230" y="90" width="190" height="150"/>
+      <rect class="bh" x="230" y="90" width="190" height="26" rx="8"/>
+      <text class="th" x="325" y="108" text-anchor="middle">Next.js server (iisnode)</text>
+      <text class="s" x="325" y="138" text-anchor="middle">App Router pages</text>
+      <text class="s" x="325" y="154" text-anchor="middle">proxy.ts (auth + route check)</text>
+      <text class="s" x="325" y="170" text-anchor="middle">server actions: client/api/*</text>
+      <text class="s" x="325" y="186" text-anchor="middle">api-wrapper: token + refresh</text>
+      <text class="s" x="325" y="202" text-anchor="middle">server.js entry point</text>
+      <text class="s" x="325" y="224" text-anchor="middle">site root on IIS</text>
+      <!-- API -->
+      <rect class="b" x="490" y="70" width="190" height="190"/>
+      <rect class="bh" x="490" y="70" width="190" height="26" rx="8"/>
+      <text class="th" x="585" y="88" text-anchor="middle">ASP.NET Core API (/REST)</text>
+      <text class="s" x="585" y="118" text-anchor="middle">Auth/* (LDAP, JWT, refresh)</text>
+      <text class="s" x="585" y="134" text-anchor="middle">Api/{schema}/{endpoint}</text>
+      <text class="s" x="585" y="150" text-anchor="middle">dynamic endpoint engine</text>
+      <text class="s" x="585" y="166" text-anchor="middle">EndpointCache (in memory)</text>
+      <text class="s" x="585" y="182" text-anchor="middle">ehr/* SMART on FHIR</text>
+      <text class="s" x="585" y="198" text-anchor="middle">Admin/*, log/*, recaptcha/*</text>
+      <text class="s" x="585" y="214" text-anchor="middle">SessionCache (in memory)</text>
+      <text class="s" x="585" y="244" text-anchor="middle">single instance</text>
+      <!-- SQL -->
+      <rect class="b" x="750" y="20" width="140" height="110"/>
+      <rect class="bh" x="750" y="20" width="140" height="26" rx="8"/>
+      <text class="th" x="820" y="38" text-anchor="middle">SQL Server</text>
+      <text class="s" x="820" y="66" text-anchor="middle">admin / api</text>
+      <text class="s" x="820" y="82" text-anchor="middle">core / model</text>
+      <text class="s" x="820" y="98" text-anchor="middle">stored procedures</text>
+      <text class="s" x="820" y="114" text-anchor="middle">PK parameter procs</text>
+      <!-- EHR -->
+      <rect class="b" x="750" y="150" width="140" height="70"/>
+      <rect class="bh" x="750" y="150" width="140" height="26" rx="8"/>
+      <text class="th" x="820" y="168" text-anchor="middle">EHR (optional)</text>
+      <text class="s" x="820" y="196" text-anchor="middle">SMART on FHIR, Epic APIs</text>
+      <text class="s" x="820" y="211" text-anchor="middle">OAuth2 + JWKS</text>
+      <!-- LDAP / SMTP -->
+      <rect class="b" x="750" y="240" width="140" height="70"/>
+      <rect class="bh" x="750" y="240" width="140" height="26" rx="8"/>
+      <text class="th" x="820" y="258" text-anchor="middle">LDAP / SMTP (opt.)</text>
+      <text class="s" x="820" y="286" text-anchor="middle">username + password</text>
+      <text class="s" x="820" y="301" text-anchor="middle">error and help email</text>
+      <!-- arrows -->
+      <path class="l" d="M160,165 L228,165" marker-end="url(#arr)" marker-start="url(#arr)"/>
+      <path class="l" d="M420,165 L488,165" marker-end="url(#arr)" marker-start="url(#arr)"/>
+      <path class="l" d="M680,100 L748,80" marker-end="url(#arr)"/>
+      <path class="l" d="M680,185 L748,185" marker-end="url(#arr)" marker-start="url(#arr)"/>
+      <path class="l" d="M680,235 L748,270" marker-end="url(#arr)"/>
+      <path class="ld" d="M85,110 L85,14 L715,14 L715,160 L748,160" marker-end="url(#arr)"/>
+      <text class="s" x="400" y="34" text-anchor="middle">EHR launch + OAuth redirects (browser to /REST/ehr/*)</text>
+      <text class="s" x="194" y="158" text-anchor="middle">HTTPS</text>
+      <text class="s" x="454" y="158" text-anchor="middle">HTTP</text>
+    </svg>
+    <div class="caption">Solid lines: request path. Dashed line: browser-side EHR redirects handled directly by the API.</div>
+  </div>
+
+  <h2 id="request-path">Request path</h2>
+  <ol>
+    <li>The browser requests a page from the Next.js server. <code>client/proxy.ts</code> runs first: it checks the refresh/access tokens, redirects unauthenticated users to <code>/auth/logout</code>, loads the user's permissions from the API (<code>Admin/GetUserPermissions</code>), stores the route-relevant ones in the <code>user-permissions</code> cookie, and redirects to <code>/404</code> if the route is not allowed.</li>
+    <li>Client components call <em>server actions</em> in <code>client/api/*.tsx</code> (<code>'use server'</code>). They go through <code>fetch_api_wrapper</code> (<code>api-wrapper.tsx</code>), which reads the <code>X-Access-Token</code> cookie on the Next.js server, adds it as a bearer token, calls the API at <code>NEXT_PUBLIC_API_BASE_URL</code>, and, if the API answers with an expired token, calls <code>Auth/RefreshTokenUser</code> with the <code>X-Refresh-Token</code> cookie and retries once.</li>
+    <li>Most data calls are <code>GET|POST /Api/{schema}/{endpoint}</code>. The API looks the endpoint up in its in-memory <code>EndpointCache</code> (loaded from <code>api.Endpoints</code>, <code>api.EndpointParameters</code> and <code>api.EndpointSecurity</code>), checks that one of the user's roles has access, and either runs a stored procedure or calls a REST URL.</li>
+    <li>The response is always the <code>ReturnInfo</code> envelope: <code>{ bSuccess, sErrorInfo, oReturnObject }</code>.</li>
+    <li>Drug parameters are not in the client source. <code>Meds/GetDrugModels</code> runs <code>core.GetMedicationModels</code>, which executes each model's <code>model.PK_*</code> procedure for the patient's weight, age, height and sex. The client then runs the simulation in the browser (<a href="simulation-algorithm.html">simulation-algorithm.html</a>).</li>
+  </ol>
+
+  <h2 id="features">Main features</h2>
+  <ul>
+    <li><strong>Dashboard</strong> (<code>/</code>): patient covariates, dose tables per drug (bolus, start infusion, dose change, stop infusion), one Plotly graph per drug (expandable to a full-size view), graph options, optional per-graph JSON data export (permission <code>ExportGraphToFileButton</code>).</li>
+    <li><strong>EHR mode</strong> (<code>/?fromEhr=true</code>): loads weight, height, case times and drug administrations over SMART on FHIR and refreshes them every 5 minutes. See <a href="ehr-launch-flow.html">ehr-launch-flow.html</a>.</li>
+    <li><strong>MPOG case search</strong>: optional, MPOG members only (database-defined endpoint, disabled by default).</li>
+    <li><strong>Reports</strong> (<code>/reports</code>): internal login report from <code>admin.GetUsersLoginCount</code> and an optional embedded external report.</li>
+    <li><strong>Administration</strong>: user admin (<code>/admin/user-admin</code>) and an in-app API editor (<code>/admin/api-edit</code>) that edits endpoint definitions in the database, then reloads the cache.</li>
+    <li><strong>Disclaimer and reCAPTCHA gate</strong> (<code>/disclaimercaptcha</code>) with a per-host skip list.</li>
+    <li><strong>Logging</strong>: graph inputs (<code>api.Graph_Logs</code>), user activity, client errors and logins to SQL Server; optional SMTP error mail.</li>
+  </ul>
+
+  <h2 id="tech">Technology</h2>
+  <table>
+    <tr><th>Layer</th><th>Stack</th></tr>
+    <tr><td>Client</td><td>Next.js 16 (App Router, Turbopack in dev), React 19, TypeScript 5, Tailwind CSS 3, Radix UI primitives, Plotly (<code>plotly.js-dist-min</code>), axios, jose, ExcelJS, Jest</td></tr>
+    <tr><td>API</td><td>ASP.NET Core on .NET 10, JWT bearer (RS384), RestSharp, Newtonsoft.Json, Novell LDAP, log4net, Swashbuckle (development only)</td></tr>
+    <tr><td>Database</td><td>SQL Server 2017+ (compatibility level 130+), schemas <code>admin</code>, <code>api</code>, <code>core</code>, <code>model</code></td></tr>
+    <tr><td>Hosting</td><td>Windows Server + IIS: iisnode for the client at the site root, the API as the <code>/REST</code> application, URL Rewrite routing in <code>web.config</code></td></tr>
+  </table>
+  <p class="small muted">Full dependency lists: <a href="opensource-libraries.html">opensource-libraries.html</a>.</p>
+
+  <h2 id="security">Security notes</h2>
+  <ul>
+    <li><strong>Never run a server with <code>Environment</code> set to <code>Development</code>.</strong> In that mode test accounts sign in without a password and <code>/Admin/RestoreSession</code> and <code>/Admin/GetSession</code> are enabled.</li>
+    <li>Config files with secrets (<code>appsettings.json</code>, <code>web.config</code>, <code>.env</code>, <code>keys/</code>) are gitignored. Keep them out of source control.</li>
+    <li>The API keeps sessions, OAuth state and the endpoint cache in memory, so it must run as a single instance.</li>
+    <li><code>api.UserLogin_Log</code> can hold patient ID, MRN and name from the EHR launch. Treat the database as holding protected health information.</li>
+    <li>Report vulnerabilities as described in <code>SECURITY.md</code>.</li>
+  </ul>
+
+  <h2 id="license">License</h2>
+  <p>Copyright &copy; 2023&ndash;2026 The Regents of the University of Michigan. GPL-3.0-or-later, without any warranty. See <code>LICENSE</code>.</p>
+
+  <footer>tiva-open-source workspace docs</footer>
+</main>
+</body>
+</html>

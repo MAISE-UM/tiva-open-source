@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TIVA — Authentication and Permissions</title>
+<link rel="stylesheet" href="assets/docs.css">
+<script src="assets/nav.js" defer></script>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="index.html">&larr; Docs index</a></div>
+  <h1>TIVA — Authentication and Permissions</h1>
+  <p>Sign-in paths (LDAP, EHR), JWT and refresh-token cookies, role-based endpoint security in the API, and route permissions in the client.</p>
+</header>
+
+<main>
+  <div class="toc">
+    <a href="#signin">Sign-in paths</a>
+    <a href="#tokens">Tokens and cookies</a>
+    <a href="#refresh">Refresh</a>
+    <a href="#endpoint-security">Endpoint security</a>
+    <a href="#ui-permissions">UI permissions</a>
+    <a href="#clients">API clients</a>
+    <a href="#dev">Development mode</a>
+  </div>
+
+  <h2 id="signin">Sign-in paths</h2>
+  <table>
+    <tr><th>Path</th><th>Route</th><th>How it works</th></tr>
+    <tr><td>Username and password (LDAP)</td><td><code>POST /Auth/AuthenticateUser</code></td><td>The user must already exist in <code>admin.Application_Users</code> (<code>admin.GetUserDetails</code> returns roles and <code>Test_Account</code>). The password is checked by an LDAP bind: <code>Ldap:Host</code>, <code>Port</code>, <code>UseSsl</code>, and <code>BindDnTemplate</code> formatted with the username and <code>BaseDn</code>. LDAP must be enabled (<code>Ldap:Enabled</code>), otherwise login fails with &ldquo;LDAP login is not enabled&rdquo;. On success the API issues tokens and sets the cookies. Logins are recorded in <code>api.UserLogin_Log</code> with source <code>LDAP</code>.</td></tr>
+    <tr><td>EHR (SMART on FHIR)</td><td><code>GET /REST/ehr/launch</code> &hellip; <code>ehr/complete</code></td><td>The EHR proves who the user is with an <code>id_token</code>; TIVA maps it to a TIVA user and optionally creates the user. See <a href="ehr-launch-flow.html">ehr-launch-flow.html</a>.</td></tr>
+    <tr><td>EHR standalone</td><td><code>GET /REST/ehr/standalone</code></td><td>Same, without a patient context.</td></tr>
+    <tr><td>Swagger / scripts</td><td><code>POST /Auth/AuthenticateUserAPI</code></td><td>Same LDAP check, but returns the tokens in the response body instead of cookies. Intended for the Swagger UI.</td></tr>
+    <tr><td>Machine client</td><td><code>POST /Auth/AuthenticateClient</code></td><td>Client ID and secret (see <a href="#clients">API clients</a>).</td></tr>
+  </table>
+  <p>There is no self-registration: an administrator adds users in the Admin UI (<code>admin.AddUser</code>) and gives them roles, unless EHR auto-create is enabled for the EHR path. The first administrator is created with <code>admin.AddUser</code> after loading the seed data.</p>
+
+  <h2 id="tokens">Tokens and cookies</h2>
+  <table>
+    <tr><th>Item</th><th>Details</th></tr>
+    <tr><td>Access token</td><td>JWT signed RS384 with <code>JwtAuthentication:JWT_PRIVATE_KEY</code>. Lifetime 120 minutes (<code>TokenService.ExpiryDurationMinutes</code>). Claims: <code>name</code> (username), <code>nameidentifier</code> (random GUID), <code>givenname</code> (<code>Last, First</code>), <code>authenticationmethod</code> (<code>USER</code> or <code>CLIENT</code>) and one <code>role</code> claim per role. Header carries <code>kid</code> (<code>JwtAuthentication:Kid</code>, default <code>tiva-api-auth</code>) and <code>jku</code> (<code>AppSettings:AUTH_JKU_URL</code>).</td></tr>
+    <tr><td>Refresh token</td><td>Same format and key, lifetime 480 minutes (8 hours).</td></tr>
+    <tr><td>Validation</td><td>The API validates issuer and audience (<code>JwtAuthentication:ValidIssuer</code>, <code>ValidAudience</code>) and the signature with the public half of the key. The bearer handler is configured with <code>ValidateLifetime = false</code>; the dynamic <code>Api/*</code> controller checks the <code>exp</code> claim itself and answers 401 when it has passed. The Next.js server verifies tokens against <code>/.well-known/jwks.json</code> (<code>jose</code>, RS384).</td></tr>
+    <tr><td>Cookies</td><td><code>X-Access-Token</code> and <code>X-Refresh-Token</code>: HttpOnly. <code>X-Username</code>: readable. All with <code>Secure</code>, <code>SameSite=None</code>, <code>Path=/</code> and domain <code>AppSettings:COOKIE_DOMAIN</code>. The API reads the access token from the <code>X-Access-Token</code> cookie (<code>OnMessageReceived</code>) and also accepts a bearer header.</td></tr>
+    <tr><td>Session cache</td><td>On login the API stores a <code>Session</code> per lower-cased username in its in-memory distributed cache: TIVA tokens and, for EHR logins, the EHR id/access/refresh tokens and token time. REST endpoints with <code>Credential_Source = UserSession</code> read the EHR token from it.</td></tr>
+    <tr><td>Logout</td><td><code>POST /Auth/LogOut</code> expires the three cookies. The client's <code>logout()</code> also deletes <code>disclaimer_agreement</code> and <code>user-permissions</code>.</td></tr>
+  </table>
+
+  <h2 id="refresh">Refresh</h2>
+  <ol>
+    <li>A server action sends a request with the access token. The API answers 401 when the token is expired.</li>
+    <li><code>fetch_api_wrapper</code> (<a href="client.html#api-layer">client.html</a>) POSTs to <code>/Auth/RefreshTokenUser</code> with the refresh token as bearer token.</li>
+    <li>The API validates it, reloads the user and roles from the database, issues a new access/refresh pair, updates the session cache and sets new cookies. 401 means the refresh token is no longer valid and the user must sign in again (<code>proxy.ts</code> redirects to <code>/auth/logout</code>).</li>
+  </ol>
+  <p><code>/Auth/RefreshTokenClient</code> does the same for machine clients. <code>api/TIVA_API/examples/exampleJSWebCallerThatCanRefreshToken.js</code> is a sample caller.</p>
+
+  <h2 id="endpoint-security">Endpoint security (API)</h2>
+  <p>Authorization for dynamic endpoints is data, not code:</p>
+<pre><code>admin.Application_Users ─┐
+                         ├─ admin.Application_User_Roles ─┐
+admin.Application_Clients ┘ (…_Client_Roles)              ├─ admin.Application_Roles ─ role name = JWT "role" claim
+                                                           │
+api.Endpoints ─ api.EndpointSecurity (Endpoint_ID, Role_ID, Has_Access) ┘</code></pre>
+  <ul>
+    <li>When the endpoint cache loads (<code>api.GetEndpoints</code>), each endpoint gets a set of role names with access (<code>RolesWithAccess</code>).</li>
+    <li>For a call to <code>/Api/{schema}/{endpoint}</code> the controller looks the endpoint up by name. It is allowed when <code>Allow_Anonymous</code> is set, or when any <code>role</code> claim in the token is in <code>RolesWithAccess</code>. If the endpoint exists but no role matches, the API returns 403. An unknown endpoint name returns <code>bSuccess = false</code> with &ldquo;This Endpoint Either Does Not Exist Or User Does Not Have Access&rdquo;.</li>
+    <li>Every controller also has a default policy that requires an authenticated user unless the action is marked <code>[AllowAnonymous]</code> (see <a href="api.html#controllers">api.html</a>).</li>
+    <li>Seeded roles: <code>Administrator</code> (1), <code>User</code> (2) and <code>MPOGGlobal</code> (3).</li>
+  </ul>
+  <p>Endpoint definitions are edited with the in-app API editor (<code>/admin/api-edit</code>) or by SQL, followed by <code>POST /Admin/ReloadEndpoints</code> (or an app pool recycle) because the cache is only loaded at start-up.</p>
+
+  <h2 id="ui-permissions">UI permissions (client)</h2>
+  <p>What a user sees is also data. <code>admin.GetUserPermissions</code> returns the functions the user's roles (plus every <code>Default_Allow</code> function) may use, joined to the routes they belong to.</p>
+  <table>
+    <tr><th>Table</th><th>Role</th></tr>
+    <tr><td><code>admin.Application_Functions</code></td><td>Every UI element: <code>Type</code> is <code>Route</code>, <code>Category</code>, <code>DropdownLink</code>, <code>DropdownItem</code> or <code>Button</code>. <code>Function_Details</code> holds the path (for routes and links) or a switch name. <code>Parent_ID</code> nests items under a category (for example the user dropdown). <code>Default_Allow</code> makes it available to everyone.</td></tr>
+    <tr><td><code>admin.Application_Role_Functions</code></td><td>Which roles get which functions.</td></tr>
+    <tr><td><code>admin.Application_Routes</code>, <code>Application_Route_Functions</code></td><td>Which page (<code>Shared</code>, <code>Dashboard</code>, <code>Reports</code>, <code>User-Admin</code>, <code>API-Edit</code>, &hellip;) each function appears on. <code>Shared</code> functions apply everywhere.</td></tr>
+  </table>
+  <p>In the client, <code>proxy.ts</code> uses the result to decide whether a path is allowed and writes the route-relevant subset to the <code>user-permissions</code> cookie; components such as the header's user dropdown and the graph's &ldquo;Export to File&rdquo; button check that list (for example <code>permission.Function_Name === 'ExportGraphToFileButton'</code>). Details: <a href="client.html#proxy">client.html &sect; proxy.ts</a>.</p>
+  <div class="callout">
+    <p>The client-side check only hides UI. Data access is enforced by the API (endpoint security above), so permissions for routes and for endpoints must both be set up for a feature to work.</p>
+  </div>
+
+  <h2 id="clients">API clients (machine to machine)</h2>
+  <p>Clients are rows in <code>admin.Application_Clients</code> with roles in <code>admin.Application_Client_Roles</code>. They can only be created with the <code>admin.AddClient</code> endpoint, because the secret must be encrypted before it is stored (AES with <code>AppSettings:SECRET_KEY</code>; see <code>CipherService</code> and <code>POST /Admin/EncryptString</code>). A client signs in with <code>POST /Auth/AuthenticateClient</code> (client ID and secret) and receives tokens whose <code>authenticationmethod</code> is <code>CLIENT</code>. Values in <code>admin.Application_Configurations</code> are expected to be stored encrypted the same way.</p>
+
+  <h2 id="dev">Development mode (never in production)</h2>
+  <div class="callout warn">
+    <p>When <code>Environment</code> is <code>Development</code> the repository accepts users marked <code>Test_Account</code> without any password, through the normal login and the EHR login routes, and <code>GET /Admin/RestoreSession</code> and <code>GET /Admin/GetSession</code> are enabled (they return or restore any user's session by name). With any other value, a test account cannot sign in at all. <strong>Never set <code>Environment=Development</code> on a reachable server or one with real data</strong>, and keep <code>ASPNETCORE_ENVIRONMENT=Production</code> so Swagger and the developer exception page stay off. See <code>api/README.md</code> and <code>SECURITY.md</code>.</p>
+  </div>
+
+  <footer>tiva-open-source workspace docs</footer>
+</main>
+</body>
+</html>

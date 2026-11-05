@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TIVA — Simulation Algorithm</title>
+<link rel="stylesheet" href="assets/docs.css">
+<script src="assets/nav.js" defer></script>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="index.html">&larr; Docs index</a></div>
+  <h1>TIVA — Simulation Algorithm</h1>
+  <p>How <code>client/model/</code> turns a dosing history and a PK model into plasma and effect-site concentration curves.</p>
+</header>
+
+<main>
+  <div class="callout warn">
+    <p><strong>Research and educational software.</strong> The simulation reproduces published models for a typical patient. It is not validated for clinical decisions. See the <a href="project-brief.html#disclaimer">clinical use disclaimer</a>.</p>
+  </div>
+
+  <h2 id="model">The model</h2>
+  <p>For each drug TIVA simulates a three-compartment model plus an effect-site compartment. Succinylcholine adds an absorption compartment. State (<code>Amounts</code>, in mg):</p>
+  <table>
+    <tr><th>Variable</th><th>Compartment</th></tr>
+    <tr><td><code>A0</code></td><td>Absorption (used only when <code>k01 &gt; 0</code>)</td></tr>
+    <tr><td><code>A1</code></td><td>Central (plasma)</td></tr>
+    <tr><td><code>A2</code>, <code>A3</code></td><td>Peripheral compartments</td></tr>
+    <tr><td><code>A4</code></td><td>Effect site</td></tr>
+  </table>
+  <p>Parameters come from the database per patient (<code>PKDrugModel</code>): <code>Vc</code> in litres and the rate constants <code>k01</code>, <code>k10</code>, <code>k12</code>, <code>k21</code>, <code>k13</code>, <code>k31</code>, <code>ke0</code> in 1/min. Inside the loop they are converted to 1/second.</p>
+
+  <h2 id="step">One time step (<code>PKSimIterate.tsx</code>)</h2>
+  <p>The step is 1 second, an explicit Euler update:</p>
+<pre><code>EFFECT_VOL_FACTOR = 10000          // effect site is 1/10,000 of the central volume
+k   = k_per_min / 60               // 1/s
+k14 = (ke0 / 60) / EFFECT_VOL_FACTOR
+k41 =  ke0 / 60
+k1  = k10 + k12 + k13 + k14
+
+if (k01 &gt; 0):                      // succinylcholine only
+    A0 += -A0*k01 + mgInfused
+    A1 += (A0*k01 + A2*k21 + A3*k31 + A4*k41) - A1*k1
+else:
+    A1 += ((A2*k21 + A3*k31 + A4*k41) - A1*k1) + mgInfused
+A2 += A1*k12 - A2*k21
+A3 += A1*k13 - A3*k31
+A4 += A1*k14 - A4*k41</code></pre>
+  <p>The updates are applied in order, so <code>A2</code>, <code>A3</code> and <code>A4</code> use the already-updated <code>A1</code> (and <code>A1</code> the updated <code>A0</code>). The effect site is tiny, so it receives drug from the central compartment through <code>k14</code> but returns it at <code>k41 = ke0</code>, which makes its concentration relax toward plasma with rate <code>ke0</code> without disturbing mass balance appreciably.</p>
+  <p>Concentrations after each step:</p>
+<pre><code>Cp = A1 / (Vc * 1000)                         // mg/mL
+Ce = A4 / ((Vc / EFFECT_VOL_FACTOR) * 1000)   // mg/mL
+Cp, Ce -&gt; cnvtTCIUnits(.., tci_unit)           // x1000 for mcg/mL, x1e6 for ng/mL</code></pre>
+  <p>The method follows Shafer and Gregg, <em>J Pharmacokinet Biopharm</em> 1992;20(2) and an Octave reference implementation (see the root README).</p>
+
+  <h2 id="process">Driving the model (<code>processTCI.tsx</code>)</h2>
+  <p><code>processTCI(doseTable, demographics, maxTime, minMissing, refTime)</code> returns the filled <code>TCI</code> object.</p>
+  <ol>
+    <li><strong>Demographic units.</strong> Weight in <code>lb</code> is divided by 2.20462; height in <code>inches</code> is multiplied by 2.54; age in <code>months</code> is divided by 12.</li>
+    <li><strong>Time to peak.</strong> <code>getTPeak(model)</code> is computed and stored in <code>pkModel.tpeak</code> (see below).</li>
+    <li><strong>Lead-in.</strong> If the first dose is after the reference time, a <code>Start Infusion</code> row at rate 0 is inserted at the reference time so the curve starts there.</li>
+    <li><strong>First pass.</strong> For every non-bolus row, <code>timeToRun</code> is the gap in minutes (<code>timeSinceFirstEvent</code>) to the next dose-table event; the last row gets 0.</li>
+    <li><strong>Second pass.</strong> Rows are expanded so the loop only has to handle &ldquo;run this rate for this long&rdquo;:
+      <ul>
+        <li>A <code>Bolus</code> always runs for 10 seconds (<code>10/60</code> minutes) and its dose is spread evenly over those seconds. If an infusion is running, its rate is added to the bolus input for those 10 seconds, and a new <code>Start Infusion</code> row at the same rate continues from the bolus to the next event (shortened by the 10 seconds).</li>
+        <li>If no infusion is running, a zero-rate infusion row is inserted to cover the time until the next event.</li>
+        <li>After the last row, the simulation continues for <code>maxTime + minMissing</code> minutes at the infusion rate in force (0 if none). This is the dotted &ldquo;projection&rdquo; part of the graph.</li>
+      </ul>
+    </li>
+    <li><strong>Main loop.</strong> For each expanded row the loop advances <code>msec</code> in 1,000 ms steps up to <code>timeToRun</code>:
+      <ul>
+        <li>Every 10,000 ms (and at the start) the drug input rate for the row is recomputed: for infusion events <code>convertInfUnits()</code> gives mcg/kg/min and the input is <code>rate * weight / (60*1000)</code> mg per second; for a bolus <code>cnvBolusRate()</code> gives total mg and the input is that amount divided by 10 seconds (plus the running infusion rate, if any).</li>
+        <li>Every second it adds <code>getAmountInfused()</code> mg, calls <code>pkSimIterate()</code>, and appends <code>t</code> (minutes), <code>Cp</code> and <code>Ce</code> to the output arrays.</li>
+      </ul>
+    </li>
+    <li><strong>Cut-off.</strong> If the reference time is later than the first row, samples before it are removed (<code>t</code>, <code>Cp</code>, <code>Ce</code> are sliced and <code>tmin</code> shifted).</li>
+  </ol>
+
+  <h3>Supported dose events</h3>
+  <table>
+    <tr><th>Event</th><th>Meaning</th><th>Units</th></tr>
+    <tr><td><code>Bolus</code></td><td>Dose given over 10 seconds</td><td><code>mcg</code>, <code>mg</code>, <code>mcg/kg</code>, <code>mg/kg</code></td></tr>
+    <tr><td><code>Start Infusion</code></td><td>Begin a continuous infusion at <code>dose</code></td><td><code>mcg/kg/min</code>, <code>mcg/kg/hr</code>, <code>mg/kg/min</code>, <code>mg/kg/hr</code>, <code>mcg/min</code>, <code>mg/min</code>, <code>mcg/hr</code>, <code>mg/hr</code></td></tr>
+    <tr><td><code>Dose Change</code></td><td>Change the running infusion rate</td><td>same as infusion</td></tr>
+    <tr><td><code>Stop Infusion</code></td><td>Rate becomes 0</td><td>&mdash;</td></tr>
+  </table>
+  <p>The unit lists that the UI offers for each drug come from <code>core.Medications.Units</code> in the database. Weight-based conversions use the patient's weight in kg; the absolute units (<code>mcg/min</code>, <code>mg/hr</code> and so on) divide by the weight, so a weight of 0 is not meaningful.</p>
+
+  <h2 id="units">Unit helpers</h2>
+  <table>
+    <tr><th>Function</th><th>Conversion</th></tr>
+    <tr><td><code>convertInfUnits(value, unit, kg)</code></td><td>Any infusion unit &rarr; mcg/kg/min. <code>/hr</code> divides by 60; <code>mg</code> multiplies by 1000; absolute units divide by <code>kg</code>.</td></tr>
+    <tr><td><code>cnvBolusRate(dose, unit, kg)</code></td><td>Bolus dose &rarr; mg: <code>mcg</code> &times;0.001, <code>mg</code> &times;1, <code>mg/kg</code> &times;kg, <code>mcg/kg</code> &times;0.001&times;kg; unknown units give 0.</td></tr>
+    <tr><td><code>cnvtTCIUnits(mg/mL, unit)</code></td><td>mg/mL &rarr; mcg/mL (&times;1,000) or ng/mL (&times;1,000,000); other units unchanged.</td></tr>
+    <tr><td><code>cnvtMgPerMl(value, unit)</code></td><td>Inverse of the above, for TCI targets.</td></tr>
+    <tr><td><code>getAmountInfused(mgPerSec, ms)</code></td><td><code>mgPerSec * ms / 1000</code></td></tr>
+  </table>
+
+  <h2 id="tpeak">Time to peak effect (<code>getTPeak.tsx</code>)</h2>
+  <p>Starting from empty compartments, the model is given 1 mg per second for the first 10 seconds and then nothing, and the effect-site amount <code>A4</code> is recorded each second until it starts to fall. The returned array is that unit-response curve; its length is the time to peak effect in seconds (for the whole run including the 10 s input). It is recomputed for each model on every <code>processTCI</code> call and is used only by the effect-site TCI helper below.</p>
+
+  <h2 id="tci">Target-controlled infusion helpers</h2>
+  <p><code>tciPlasmaIterate</code> and <code>tciEfctIterate</code> compute the mg-per-second input needed to reach a target plasma or effect-site concentration (the effect-site version follows the Shafer and Gregg approach of finding the infusion whose predicted peak effect equals the target; it falls back to the plasma calculation when the predicted effect-site amount is already within 5% of target and returns 0 when the target is 0 or would already be exceeded). <code>processTCI</code> calls them for rows with event <code>PlasmaTCI</code> or <code>EffectTCI</code>. The dashboard does not create such rows and the target variables in <code>processTCI</code> are fixed at &minus;1, so this path is inactive in the current UI and has no tests.</p>
+
+  <h2 id="database">What the database contributes</h2>
+  <ul>
+    <li><strong>Per-patient parameters.</strong> <code>core.GetMedicationModels</code> runs each <code>model.PK_*</code> procedure with the patient's weight, age, height and sex. Covariate adjustments (Schnider age terms, adjusted body weight, James or Janmahasatian lean body mass, age bands) happen there, not in TypeScript. <a href="pk-models.html">pk-models.html</a> lists the models.</li>
+    <li><strong>Drug list and display ranges.</strong> <code>core.Medications</code> supplies units, default graphs and the <code>Lower</code>/<code>Upper</code> target band.</li>
+  </ul>
+
+  <h2 id="tests">Tests</h2>
+  <p>Unit tests in <code>client/unit_tests/</code> cover the step function, time to peak and the unit helpers (<a href="client.html#tests">client.html &sect; Tests</a>). They do not exercise <code>processTCI</code> end to end. The root README describes an external comparison against an Octave reference implementation on 101 cases (max deviation 0.103%, median 0.009%). That shows the web app reproduces the reference calculation; it is not a clinical validation.</p>
+
+  <footer>tiva-open-source workspace docs</footer>
+</main>
+</body>
+</html>

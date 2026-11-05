@@ -1,0 +1,25 @@
+bin/
+obj/
+/packages/
+riderModule.iml
+/_ReSharper.Caches/
+.idea/
+.vs/
+build/
+SQLGen/
+keys/
+launchSettings.json
+.vscode/
+publish/
+
+# Secrets and local config (use deploy/appsettings.example.json as a template)
+.env
+appsettings.json
+appsettings.normal
+backup.json
+api.html
+
+# Personal IDE and publish settings
+*.user
+*.DotSettings.user
+**/PublishProfiles/*.pubxml

@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TIVA — API Reference</title>
+<link rel="stylesheet" href="assets/docs.css">
+<script src="assets/nav.js" defer></script>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="index.html">&larr; Docs index</a></div>
+  <h1>TIVA — API Reference</h1>
+  <p>Developer reference for the ASP.NET Core API in <code>api/TIVA_API</code>: controllers, the database-driven endpoint engine, configuration, hosting, and the seeded endpoint catalog.</p>
+</header>
+
+<main>
+  <div class="toc">
+    <a href="#overview">Overview</a>
+    <a href="#pipeline">Pipeline</a>
+    <a href="#controllers">Controllers</a>
+    <a href="#endpoint-engine">Endpoint engine</a>
+    <a href="#endpoint-catalog">Endpoint catalog</a>
+    <a href="#client-calls">Client call sites</a>
+    <a href="#configuration">Configuration</a>
+    <a href="#hosting">Hosting</a>
+    <a href="#code-map">Code map</a>
+  </div>
+
+  <h2 id="overview">Overview</h2>
+  <p>Project <code>TIVA_API</code> targets <code>net10.0</code> (C# 14), uses the ASP.NET Core MVC controller model, and talks to SQL Server through a small ADO.NET wrapper (<code>Helpers/DAL.cs</code>). Almost all application data access is <em>not</em> hard-coded controllers: endpoints, parameters and role access are rows in the database (<code>api.Endpoints</code>, <code>api.EndpointParameters</code>, <code>api.EndpointSecurity</code>) and one generic controller executes them. Authentication, EHR login, logging, reCAPTCHA and a few admin utilities are normal controllers.</p>
+  <p>Every response uses the envelope <code>ReturnInfo</code> (<code>Models/ReturnInfo.cs</code>):</p>
+<pre><code>{ "bSuccess": true, "sErrorInfo": null, "oReturnObject": "&lt;JSON string&gt;" }</code></pre>
+  <p>For stored-procedure endpoints <code>oReturnObject</code> is a JSON <em>string</em>: Newtonsoft serialization of a <code>DataTable</code> (result type <code>data</code>) or <code>DataSet</code> (result type <code>dataset</code>, tables optionally named by <code>DataSet_Table_Names</code>, separated by <code>;</code>). Clients parse it a second time (the TIVA client does this in <code>processResponse</code>). JSON is serialized with <code>ReferenceHandler.Preserve</code>.</p>
+
+  <h2 id="pipeline">Request pipeline (<code>Startup.cs</code>)</h2>
+  <ol>
+    <li>HTTP logging, forwarded headers (<code>X-Forwarded-For</code>, <code>X-Forwarded-Proto</code>).</li>
+    <li>Development only (<code>ASPNETCORE_ENVIRONMENT=Development</code>): developer exception page, Swagger UI at <code>/swagger</code>.</li>
+    <li>Session (idle timeout 60 minutes, HttpOnly, in-memory), CORS and <code>Access-Control-Allow-*</code> headers for <code>AppSettings:SITE_URL</code> (comma-separated origins allowed, credentials allowed), HTTPS redirection.</li>
+    <li>Routing, authentication (JWT bearer + cookie scheme, token read from the <code>X-Access-Token</code> cookie, RS384, <code>RequireHttpsMetadata=false</code>, <code>ValidateLifetime=false</code>), authorization. A global filter requires an authenticated user on every action that is not marked <code>[AllowAnonymous]</code>.</li>
+    <li>Endpoints: <code>MapControllers()</code> plus the EHR routes mapped from <code>Ehr:Routes</code> (only if <code>Ehr:Enabled</code>).</li>
+    <li>After start-up, <code>EndpointCache.WarmCache()</code> loads the endpoint definitions from the database. A failure is logged to the console but does not stop the app.</li>
+  </ol>
+  <p>Singletons: <code>EndpointCache</code>, <code>AccessCheckerService</code>. Scoped: <code>SessionCache</code> (over <code>AddDistributedMemoryCache</code>), <code>SmartOnFhirService</code>. Transient: <code>IRepository</code>, <code>ITokenService</code>. <strong>Everything is held in process memory, so the API must run as a single instance</strong> (one server, one IIS worker process). Restarting it signs users out.</p>
+
+  <h2 id="controllers">Controllers</h2>
+  <div class="table-wrap">
+  <table>
+    <tr><th>Route</th><th>Method</th><th>Auth</th><th>Purpose</th></tr>
+    <tr><td colspan="4"><strong>Dynamic endpoints</strong> &mdash; <code>Controllers/APIController.cs</code></td></tr>
+    <tr><td><code>/Api/{schema}/{endpoint}</code></td><td><span class="pill get">GET</span></td><td>per endpoint</td><td>Runs the database-defined endpoint. Parameters from the query string (<code>key=value&amp;&hellip;</code>).</td></tr>
+    <tr><td><code>/Api/{schema}/{endpoint}/{slug}</code></td><td><span class="pill get">GET</span></td><td>per endpoint</td><td>Same, with a slug passed to a stored procedure as <code>@Slug</code> (used for <code>Admin/GetUserPermissions/{user}</code>).</td></tr>
+    <tr><td><code>/Api/{schema}/{endpoint}</code></td><td><span class="pill post">POST</span></td><td>per endpoint</td><td>Same, with parameters from a JSON body of string values.</td></tr>
+    <tr><td colspan="4"><strong>Authentication</strong> &mdash; <code>AuthenticationController.cs</code> (see <a href="auth-and-permissions.html">auth-and-permissions.html</a>)</td></tr>
+    <tr><td><code>/Auth/AuthenticateUser</code></td><td><span class="pill post">POST</span></td><td>anonymous</td><td>LDAP login; sets <code>X-Access-Token</code>, <code>X-Refresh-Token</code>, <code>X-Username</code>.</td></tr>
+    <tr><td><code>/Auth/AuthenticateUserAPI</code></td><td><span class="pill post">POST</span></td><td>anonymous</td><td>LDAP login returning tokens in the body (Swagger).</td></tr>
+    <tr><td><code>/Auth/AuthenticateClient</code></td><td><span class="pill post">POST</span></td><td>authenticated</td><td>Machine client login (client ID and secret). The source comment says anonymous access is required, but the action has no <code>[AllowAnonymous]</code>, so the global authenticated-user policy applies.</td></tr>
+    <tr><td><code>/Auth/RefreshTokenUser</code></td><td><span class="pill post">POST</span></td><td>anonymous (validates the refresh token itself)</td><td>New token pair from a refresh token.</td></tr>
+    <tr><td><code>/Auth/RefreshTokenClient</code></td><td><span class="pill post">POST</span></td><td>anonymous (validates itself)</td><td>Refresh for machine clients.</td></tr>
+    <tr><td><code>/Auth/UserExists</code>, <code>/Auth/ClientExists</code></td><td><span class="pill post">POST</span></td><td>authenticated, role-checked</td><td>Existence checks (LDAP / client table).</td></tr>
+    <tr><td><code>/Auth/IsUserAuthenticated</code></td><td><span class="pill get">GET</span></td><td>authenticated</td><td>Returns whether the caller's token is valid.</td></tr>
+    <tr><td><code>/Auth/LogOut</code></td><td><span class="pill post">POST</span></td><td>anonymous</td><td>Expires the three auth cookies.</td></tr>
+    <tr><td colspan="4"><strong>EHR (SMART on FHIR)</strong> &mdash; <code>EhrOAuthController.cs</code> (see <a href="ehr-launch-flow.html">ehr-launch-flow.html</a>)</td></tr>
+    <tr><td><code>/{Ehr:Routes:Launch}</code> (default <code>ehr/launch</code>)</td><td><span class="pill get">GET</span></td><td>anonymous</td><td>Step 1: validate issuer, redirect to EHR authorize.</td></tr>
+    <tr><td><code>/{Ehr:Routes:Callback}</code> (<code>ehr/callback</code>)</td><td><span class="pill get">GET</span></td><td>anonymous</td><td>Step 2: keep code and state in cookies, redirect to the client loading page.</td></tr>
+    <tr><td><code>/{Ehr:Routes:Complete}</code> (<code>ehr/complete</code>)</td><td><span class="pill get">GET</span></td><td>anonymous</td><td>Step 3: token exchange, user mapping, sign-in, redirect to the client.</td></tr>
+    <tr><td><code>/{Ehr:Routes:StandaloneLaunch}</code>, <code>StandaloneCallback</code></td><td><span class="pill get">GET</span></td><td>anonymous</td><td>Launch outside the EHR (no patient context).</td></tr>
+    <tr><td><code>/ehr/client-config</code></td><td><span class="pill get">GET</span></td><td>anonymous</td><td>Non-secret EHR settings for the client: <code>Enabled</code>, <code>DisplayName</code>, <code>CompletePath</code>, <code>DataMapping</code>.</td></tr>
+    <tr><td><code>/.well-known/jwks.json</code></td><td><span class="pill get">GET</span></td><td>anonymous</td><td>Public keys (EHR client assertion key and the API token key), RS384 with <code>kid</code>.</td></tr>
+    <tr><td colspan="4"><strong>Admin and utilities</strong> &mdash; <code>AdminController.cs</code>, <code>ExternalLog.cs</code>, <code>Recaptcha.cs</code></td></tr>
+    <tr><td><code>/Admin/Health</code></td><td><span class="pill get">GET</span></td><td>anonymous</td><td>Returns <code>Healthy</code>. Use it to check a deployment.</td></tr>
+    <tr><td><code>/Admin/ReloadEndpoints</code></td><td><span class="pill post">POST</span></td><td>role from <code>api.EndpointSecurity</code></td><td>Clears and reloads the endpoint cache from the database.</td></tr>
+    <tr><td><code>/Admin/GetCurrentEndpoints</code></td><td><span class="pill get">GET</span></td><td>role-checked</td><td>Serialized current cache, for comparing with the database.</td></tr>
+    <tr><td><code>/Admin/EncryptString</code>, <code>/Admin/DecryptString</code></td><td><span class="pill post">POST</span></td><td>role-checked</td><td>AES with <code>AppSettings:SECRET_KEY</code>. Used to produce client secrets and configuration values.</td></tr>
+    <tr><td><code>/Admin/GetSession</code>, <code>/Admin/RestoreSession</code></td><td><span class="pill get">GET</span></td><td>authenticated / anonymous</td><td><strong>Development only</strong> (404 otherwise). Read or restore a user's session by name.</td></tr>
+    <tr><td><code>/Admin/SetSession</code></td><td><span class="pill post">POST</span></td><td>authenticated</td><td>Writes the posted <code>Session</code> object to the session cache. There is no environment or role check in the code.</td></tr>
+    <tr><td><code>/log/external</code></td><td><span class="pill post">POST</span></td><td>anonymous</td><td>Stores external-use graph activity (<code>admin.Log_External_Activity</code>).</td></tr>
+    <tr><td><code>/recaptcha/verify</code></td><td><span class="pill post">POST</span></td><td>anonymous</td><td>Verifies a reCAPTCHA token with Google (<code>RECAPTCHA_SECRET_KEY</code>) and records the external user (<code>admin.Log_External_User</code>).</td></tr>
+  </table>
+  </div>
+  <p class="small muted">Routes are as declared in the controllers. Several <code>Admin/*</code> and <code>Auth/*</code> names also exist as rows in <code>api.Endpoints</code> with the procedure <code>hardcoded</code>; those rows exist so roles can be granted to the built-in actions (<code>AccessCheckerService</code>).</p>
+
+  <h2 id="endpoint-engine">Endpoint engine</h2>
+  <p>The generic controller turns a request such as <code>POST /Api/Meds/GetDrugModels</code> into a database call.</p>
+  <ol>
+    <li><strong>Authenticate.</strong> The action is anonymous at the framework level so that anonymous endpoints can exist. The user name comes from the token's <code>name</code> claim, or <code>anonymous</code>. If the token has an <code>exp</code> claim in the past the call returns 401.</li>
+    <li><strong>Find the endpoint.</strong> <code>EndpointCache</code> maps the name <code>{schema}/{endpoint}</code> to an <code>Endpoint</code> object. Unknown names return <code>bSuccess=false</code>.</li>
+    <li><strong>Authorize.</strong> <code>Allow_Anonymous</code> endpoints pass. Otherwise one of the token's role claims must be in the endpoint's <code>RolesWithAccess</code> (403 if not).</li>
+    <li><strong>Execute</strong> by <code>Call_Type</code>:
+      <ul>
+        <li><code>StoredProcedure</code>: builds <code>EXEC &lt;proc&gt; [@User] [, @Slug] , @Param&hellip;</code> with typed SQL parameters from <code>api.EndpointParameters</code> (types <code>int</code>, <code>double</code>, <code>string</code>, <code>date</code>, <code>datetime</code>, <code>bool</code>). <code>UseParam0UserPass</code> passes the caller's user name as <code>@User</code>. A required parameter that is missing aborts the call with &ldquo;missing required parameter&rdquo;; optional ones become NULL. A parameter value equal to its <code>Null_Value</code> is sent as NULL. Results are serialized as described in the overview. The connection comes from <code>Connection_Name</code> (<code>DatabaseSettings:DEFAULT</code>).</li>
+        <li><code>REST</code>: calls an external HTTP API with RestSharp. The URL is <code>{URL base}{URL}</code>, where the base is looked up by <code>URL_Base</code> in <code>admin.Application_Lists</code> (category <code>APIEditor</code>, section <code>URLBases</code>) and cached. Parameters go to the query string, JSON body or URL path by <code>Parameter_Destination</code> (<code>Parameter</code>, <code>Body</code>, <code>URL</code>); one <code>URL</code> parameter is appended as <code>/{value}</code>. System-provided parameters take a fixed <code>Template</code> (with <code>{var}</code> replaced by the caller's name for <code>Is_User_Pass</code>) and can be objects or lists of objects, for APIs with structured request bodies.</li>
+      </ul>
+    </li>
+    <li><strong>Credentials for REST calls</strong> (<code>Credential_Source</code>): <code>None</code>; <code>AdminConfigTable</code> (an encrypted value in <code>admin.Application_Configurations</code>); <code>UserSession</code> (a property of the caller's cached <code>Session</code>, for example <code>FhirAccessToken</code>, refreshed first if older than <code>Ehr:TokenRefreshMinutes</code>); <code>CacheToken</code> (a cached value). The token is sent as a bearer header.</li>
+    <li><strong>Respond</strong> with the <code>ReturnInfo</code> envelope.</li>
+  </ol>
+  <h3>Adding or changing an endpoint</h3>
+  <ol>
+    <li>Add the rows (in the <code>/admin/api-edit</code> UI, with <code>api.AddEndpoint</code>, <code>api.AddParameter</code> and <code>api.AddSecurityRole</code>, or by SQL): endpoint, parameters, and the roles that may call it.</li>
+    <li>Call <code>POST /Admin/ReloadEndpoints</code> (or recycle the app pool). The cache is otherwise only filled at start-up.</li>
+    <li>Call <code>/Api/{schema}/{endpoint}</code>. Check <code>GET /Admin/GetCurrentEndpoints</code> to see what the API has loaded.</li>
+  </ol>
+  <p>The client's <code>/admin/api-edit</code> screen does the same with a review step that shows the diff before saving.</p>
+
+  <h2 id="endpoint-catalog">Endpoint catalog (seeded)</h2>
+  <p>Generated from <code>api/TIVA_API/examples/SeedData.sql</code>. A real installation may differ: endpoints are data.</p>
+<!-- BEGIN GENERATED:endpoints -->
+<p>46 endpoints in <code>SeedData.sql</code>, grouped by schema (first path segment). Call them as <code>/Api/{schema}/{endpoint}</code>. Implementation: <span class="pill sp">SP</span> runs a stored procedure, <span class="pill rest">REST</span> calls an external API, <span class="pill">Controller</span> marks rows whose procedure is <code>hardcoded</code>: the action is implemented in C# and the row exists so roles can be granted to it. Rows with request type <code>hardcoded</code> have no HTTP method defined by the row. Parameters: <code>?</code> optional, <code>*</code> system-provided, <code>[body]</code> / <code>[url]</code> destination (default: query string or procedure parameter).</p>
+<h4>Admin</h4><div class="table-wrap"><table><tr><th>Endpoint</th><th>Method</th><th>Implementation</th><th>Access</th><th>Parameters</th></tr>
+<tr><td><code>Admin/AddApplicationFunction</code></td><td><span class="pill post">POST</span></td><td><span class="pill sp">SP</span> <code>admin.AddApplicationFunction</code> <span class="small muted">&rarr; data</span><br><span class="small muted">caller name passed as @User</span></td><td>Administrator</td><td><code>Function_Name</code>, <code>Display_Name</code>, <code>Parent_ID</code>, <code>Function_Details</code>, <code>Type</code>, <code>Display_Order</code>, <code>Created_By</code></td></tr>
+<tr><td><code>Admin/AddClient</code></td><td>&mdash;</td><td><span class="pill sp">SP</span> <code>api.AddClient</code> <span class="small muted">&rarr; data</span><br><span class="small" style="color:#8a4b00">procedure not found in CreateDB.sql</span><br><span class="small muted">caller name passed as @User</span></td><td>Administrator</td><td>&mdash;</td></tr>
+<tr><td><code>Admin/AddEndpoint</code></td><td>&mdash;</td><td><span class="pill sp">SP</span> <code>api.AddEndpoint</code> <span class="small muted">&rarr; data</span><br><span class="small muted">caller name passed as @User</span></td><td>Administrator</td><td><code>Endpoint_Name</code>, <code>Request_Type</code>, <code>Stored_Procedure</code>, <code>Connection_Name</code>, <code>Result_Type</code>, <code>DataSet_Table_Names</code>, <code>UseParam0UserPass</code>, <code>Description</code>, <code>Activity_Notes</code>, <code>Allow_Anonymous</code></td></tr>
+<tr><td><code>Admin/AddParameter</code></td><td>&mdash;</td><td><span class="pill sp">SP</span> <code>api.AddParameter</code> <span class="small muted">&rarr; data</span><br><span class="small muted">caller name passed as @User</span></td><td>Administrator</td><td><code>Endpoint_ID</code>, <code>Parameter_Name</code>, <code>Parameter_Type</code>, <code>Parameter_Order</code>, <code>Null_Value</code>, <code>Is_Optional</code>, <code>Description</code>, <code>Activity_Notes</code></td></tr>
+<tr><td><code>Admin/AddSecurityRole</code></td><td>&mdash;</td><td><span class="pill sp">SP</span> <code>api.AddSecurityRole</code> <span class="small muted">&rarr; data</span><br><span class="small muted">caller name passed as @User</span></td><td>Administrator</td><td><code>Endpoint_ID</code>, <code>Role_ID</code>, <code>Activity_Notes</code>, <code>Has_Access</code></td></tr>
+<tr><td><code>Admin/AddUser</code></td><td><span class="pill post">POST</span></td><td><span class="pill sp">SP</span> <code>admin.AddUser</code> <span class="small muted">&rarr; data</span><br><span class="small muted">caller name passed as @User</span></td><td>Administrator</td><td><code>User_Name</code>, <code>First_Name</code>, <code>Last_Name</code>, <code>Role_ID_List</code>, <code>Mapping_Role_ID</code>, <code>Created_By</code></td></tr>
+<tr><td><code>Admin/CheckUserExists</code></td><td><span class="pill post">POST</span></td><td><span class="pill sp">SP</span> <code>admin.CheckUserExists</code> <span class="small muted">&rarr; data</span></td><td>Administrator</td><td><code>User_Name</code></td></tr>
+<tr><td><code>Admin/DecryptString</code></td><td>&mdash;</td><td><span class="pill">Controller</span></td><td>Administrator</td><td>&mdash;</td></tr>
+<tr><td><code>Admin/DeleteUser</code></td><td><span class="pill post">POST</span></td><td><span class="pill sp">SP</span> <code>admin.DeleteUser</code> <span class="small muted">&rarr; data</span><br><span class="small muted">caller name passed as @User</span></td><td>Administrator</td><td><code>User_ID</code></td></tr>
+<tr><td><code>Admin/EditUser</code></td><td><span class="pill post">POST</span></td><td><span class="pill sp">SP</span> <code>admin.EditUser</code> <span class="small muted">&rarr; data</span><br><span class="small muted">caller name passed as @User</span></td><td>Administrator</td><td><code>User_ID</code>, <code>User_Name</code>, <code>First_Name</code>, <code>Last_Name</code>, <code>Role_ID_List</code>, <code>Is_Active</code></td></tr>
+<tr><td><code>Admin/EncryptString</code></td><td>&mdash;</td><td><span class="pill">Controller</span></td><td>anonymous</td><td>&mdash;</td></tr>
+<tr><td><code>Admin/GetAllApplicationFunctions</code></td><td><span class="pill post">POST</span></td><td><span class="pill sp">SP</span> <code>admin.GetAllApplicationFunctions</code> <span class="small muted">&rarr; data</span></td><td>Administrator</td><td>&mdash;</td></tr>
+<tr><td><code>Admin/GetApplicationLists</code></td><td><span class="pill post">POST</span></td><td><span class="pill sp">SP</span> <code>admin.GetApplicationLists</code> <span class="small muted">&rarr; data</span></td><td>Administrator, User</td><td><code>Category</code>?, <code>Section</code>?, <code>Key</code>?</td></tr>
+<tr><td><code>Admin/GetClientDetails</code></td><td><span class="pill post">POST</span></td><td><span class="pill sp">SP</span> <code>admin.GetClientDetails</code> <span class="small muted">&rarr; data</span></td><td>Administrator</td><td><code>Client_ID</code></td></tr>
+<tr><td><code>Admin/GetCurrentEndpoints</code></td><td>&mdash;</td><td><span class="pill">Controller</span></td><td>Administrator</td><td>&mdash;</td></tr>
+<tr><td><code>Admin/GetDBEndpoints</code></td><td>&mdash;</td><td><span class="pill sp">SP</span> <code>api.GetEndpoints</code> <span class="small muted">&rarr; dataset</span></td><td>Administrator</td><td>&mdash;</td></tr>
+<tr><td><code>Admin/GetEndpoints</code></td><td><span class="pill get">GET</span></td><td><span class="pill sp">SP</span> <code>api.GetEndpoints</code> <span class="small muted">&rarr; data</span></td><td>Administrator</td><td>&mdash;</td></tr>
+<tr><td><code>Admin/GetUserDetails</code></td><td><span class="pill post">POST</span></td><td><span class="pill sp">SP</span> <code>admin.GetUserDetails</code> <span class="small muted">&rarr; data</span></td><td>Administrator, User</td><td><code>username</code></td></tr>
+<tr><td><code>Admin/GetUserPermissions</code></td><td><span class="pill post">POST</span></td><td><span class="pill sp">SP</span> <code>admin.GetUserPermissions</code> <span class="small muted">&rarr; data</span><br><span class="small muted">caller name passed as @User</span></td><td>Administrator, User</td><td><code>Route</code>?</td></tr>
+<tr><td><code>Admin/GetUserRoleApplicationFunctions</code></td><td><span class="pill post">POST</span></td><td><span class="pill sp">SP</span> <code>admin.GetUserRoleApplicationFunctions</code> <span class="small muted">&rarr; dataset</span></td><td>Administrator</td><td><code>Role_Name</code></td></tr>
+<tr><td><code>Admin/GetUserRoles</code></td><td><span class="pill get">GET</span></td><td><span class="pill sp">SP</span> <code>admin.GetUserRoles</code> <span class="small muted">&rarr; data</span></td><td>Administrator</td><td>&mdash;</td></tr>
+<tr><td><code>Admin/GetUsersByRole</code></td><td><span class="pill post">POST</span></td><td><span class="pill sp">SP</span> <code>admin.GetUsersByRole</code> <span class="small muted">&rarr; data</span></td><td>Administrator</td><td><code>Role_Name</code></td></tr>
+<tr><td><code>Admin/ReloadEndpoints</code></td><td>&mdash;</td><td><span class="pill">Controller</span></td><td>Administrator</td><td>&mdash;</td></tr>
+<tr><td><code>Admin/UpdateApplicationRoleFunctionPairs</code></td><td><span class="pill post">POST</span></td><td><span class="pill sp">SP</span> <code>admin.UpdateApplicationRoleFunctionPairs</code> <span class="small muted">&rarr; data</span></td><td>Administrator</td><td><code>Role_ID</code>, <code>Application_Functions_To_Be_Added_List</code>, <code>Application_Functions_To_Be_Removed_List</code>, <code>Created_By</code></td></tr>
+<tr><td><code>Admin/UpdateClient</code></td><td>&mdash;</td><td><span class="pill sp">SP</span> <code>api.UpdateClient</code> <span class="small muted">&rarr; data</span><br><span class="small" style="color:#8a4b00">procedure not found in CreateDB.sql</span><br><span class="small muted">caller name passed as @User</span></td><td>Administrator</td><td>&mdash;</td></tr>
+<tr><td><code>Admin/UpdateEndpoint</code></td><td>&mdash;</td><td><span class="pill sp">SP</span> <code>api.UpdateEndpoint</code> <span class="small muted">&rarr; data</span><br><span class="small muted">caller name passed as @User</span></td><td>Administrator</td><td><code>Endpoint_ID</code>, <code>Endpoint_Name</code>?, <code>Request_Type</code>?, <code>Stored_Procedure</code>?, <code>Connection_Name</code>?, <code>Result_Type</code>?, <code>DataSet_Table_Names</code>?, <code>UseParam0UserPass</code>?, <code>Description</code>?, <code>Activity_Notes</code>?, <code>Deleted</code>?, <code>Allow_Anonymous</code>?</td></tr>
+<tr><td><code>Admin/UpdateParameter</code></td><td>&mdash;</td><td><span class="pill sp">SP</span> <code>api.UpdateParameter</code> <span class="small muted">&rarr; data</span><br><span class="small muted">caller name passed as @User</span></td><td>Administrator</td><td><code>Parameter_ID</code>, <code>Endpoint_ID</code>, <code>Parameter_Name</code>?, <code>Parameter_Type</code>?, <code>Parameter_Order</code>?, <code>Null_Value</code>?, <code>Is_Optional</code>?, <code>Description</code>?, <code>Activity_Notes</code>?, <code>Deleted</code>?</td></tr>
+<tr><td><code>Admin/UpdateSecurityRole</code></td><td>&mdash;</td><td><span class="pill sp">SP</span> <code>api.UpdateSecurityRole</code> <span class="small muted">&rarr; data</span><br><span class="small muted">caller name passed as @User</span></td><td>Administrator</td><td><code>Endpoint_ID</code>, <code>Role_ID</code>, <code>Activity_Notes</code>?, <code>Has_Access</code>?, <code>Deleted</code>?</td></tr>
+</table></div>
+<h4>Auth</h4><div class="table-wrap"><table><tr><th>Endpoint</th><th>Method</th><th>Implementation</th><th>Access</th><th>Parameters</th></tr>
+<tr><td><code>Auth/ClientExists</code></td><td>&mdash;</td><td><span class="pill">Controller</span></td><td>Administrator</td><td>&mdash;</td></tr>
+<tr><td><code>Auth/IsUserAuthenticated</code></td><td>&mdash;</td><td><span class="pill">Controller</span></td><td>Administrator, User</td><td>&mdash;</td></tr>
+<tr><td><code>Auth/UserExists</code></td><td>&mdash;</td><td><span class="pill">Controller</span></td><td>Administrator</td><td>&mdash;</td></tr>
+</table></div>
+<h4>FHIR</h4><div class="table-wrap"><table><tr><th>Endpoint</th><th>Method</th><th>Implementation</th><th>Access</th><th>Parameters</th></tr>
+<tr><td><code>FHIR/GetFlowSheetRow</code></td><td><span class="pill post">POST</span></td><td><span class="pill rest">REST</span> <code>EhrFHIR</code> + <code>REPLACE_WITH_EPIC_API_PATH</code> <span class="small muted">(set the URL for your EHR)</span><br><span class="small muted">credentials: UserSession/FhirAccessToken</span></td><td>Administrator, User</td><td><code>UserID</code>*<span class="muted small">[body]</span>, <code>UserIDType</code>*<span class="muted small">[body]</span>, <code>PatientID</code><span class="muted small">[body]</span>, <code>PatientIDType</code>*<span class="muted small">[body]</span>, <code>ContactID</code><span class="muted small">[body]</span>, <code>ContactIDType</code>*<span class="muted small">[body]</span>, <code>LookbackHours</code>*<span class="muted small">[body]</span>, <code>FlowsheetRowIDs</code><span class="muted small">[body]</span></td></tr>
+<tr><td><code>FHIR/GetMedication</code></td><td><span class="pill get">GET</span></td><td><span class="pill rest">REST</span> <code>EhrFHIR</code> + <code>api/FHIR/STU3/Medication</code><br><span class="small muted">credentials: UserSession/FhirAccessToken</span></td><td>Administrator, User</td><td><code>fhirmed</code><span class="muted small">[url]</span></td></tr>
+<tr><td><code>FHIR/GetMedicationAdministration</code></td><td><span class="pill post">POST</span></td><td><span class="pill rest">REST</span> <code>EhrFHIR</code> + <code>REPLACE_WITH_EPIC_API_PATH</code> <span class="small muted">(set the URL for your EHR)</span><br><span class="small muted">credentials: UserSession/FhirAccessToken</span></td><td>Administrator, User</td><td><code>UserID</code>*<span class="muted small">[body]</span>, <code>UserIDType</code>*<span class="muted small">[body]</span>, <code>PatientID</code><span class="muted small">[body]</span>, <code>PatientIDType</code>*<span class="muted small">[body]</span>, <code>ContactID</code><span class="muted small">[body]</span>, <code>ContactIDType</code>*<span class="muted small">[body]</span>, <code>OrderIDs</code><span class="muted small">[body]</span></td></tr>
+<tr><td><code>FHIR/GetMedicationRequest</code></td><td><span class="pill get">GET</span></td><td><span class="pill rest">REST</span> <code>EhrFHIR</code> + <code>api/FHIR/R4/MedicationRequest</code><br><span class="small muted">credentials: UserSession/FhirAccessToken</span></td><td>Administrator, User</td><td><code>patient</code></td></tr>
+<tr><td><code>FHIR/GetMedicationStatements</code></td><td><span class="pill get">GET</span></td><td><span class="pill rest">REST</span> <code>EhrFHIR</code> + <code>api/FHIR/STU3/MedicationStatement</code><br><span class="small muted">credentials: UserSession/FhirAccessToken</span></td><td>Administrator, User</td><td><code>patient</code>, <code>status</code>*, <code>effective</code></td></tr>
+<tr><td><code>FHIR/GetSurgicalCase</code></td><td><span class="pill post">POST</span></td><td><span class="pill rest">REST</span> <code>EhrFHIR</code> + <code>REPLACE_WITH_EPIC_API_PATH</code> <span class="small muted">(set the URL for your EHR)</span><br><span class="small muted">credentials: UserSession/FhirAccessToken</span></td><td>Administrator, User</td><td><code>SurgicalRecordID</code>, <code>SurgicalRecordIDType</code>*, <code>UserID</code>*, <code>UserIDType</code>*, <code>PAFRecords</code>*<span class="muted small">[body]</span></td></tr>
+<tr><td><code>FHIR/GetVitalSigns</code></td><td><span class="pill get">GET</span></td><td><span class="pill rest">REST</span> <code>EhrFHIR</code> + <code>api/FHIR/R4/Observation</code><br><span class="small muted">credentials: UserSession/FhirAccessToken</span></td><td>Administrator, User</td><td><code>patient</code>, <code>category</code>*, <code>code</code>*</td></tr>
+</table></div>
+<h4>Lists</h4><div class="table-wrap"><table><tr><th>Endpoint</th><th>Method</th><th>Implementation</th><th>Access</th><th>Parameters</th></tr>
+<tr><td><code>Lists/GetLists</code></td><td><span class="pill post">POST</span></td><td><span class="pill sp">SP</span> <code>Core.GetLists</code> <span class="small muted">&rarr; data</span></td><td>anonymous</td><td><code>List</code>?</td></tr>
+</table></div>
+<h4>Logs</h4><div class="table-wrap"><table><tr><th>Endpoint</th><th>Method</th><th>Implementation</th><th>Access</th><th>Parameters</th></tr>
+<tr><td><code>Logs/SaveClientLog</code></td><td><span class="pill post">POST</span></td><td><span class="pill sp">SP</span> <code>api.SaveClientLog</code> <span class="small muted">&rarr; data</span><br><span class="small muted">caller name passed as @User</span></td><td><span class="muted">no roles</span></td><td><code>Activity_Client</code>, <code>Activity_Source_IP</code>, <code>Activity_Server_IP</code>, <code>Activity_Browser_Details</code>, <code>Activity_Type</code>, <code>Activity_Details</code></td></tr>
+<tr><td><code>Logs/SaveErrorLog</code></td><td><span class="pill post">POST</span></td><td><span class="pill sp">SP</span> <code>api.SaveErrorLog</code> <span class="small muted">&rarr; data</span><br><span class="small muted">caller name passed as @User</span></td><td><span class="muted">no roles</span></td><td><code>ERROR_SOURCE</code>, <code>ERROR_DESCRIPTION</code>, <code>OTHER_INFO</code>, <code>IP_ADDRESS</code></td></tr>
+<tr><td><code>Logs/SaveGraphLog</code></td><td><span class="pill post">POST</span></td><td><span class="pill sp">SP</span> <code>api.LogGraph</code> <span class="small muted">&rarr; data</span></td><td>User, Administrator</td><td><code>provider</code>, <code>age</code>, <code>age_unit</code>, <code>weight</code>, <code>weight_unit</code>, <code>height</code>, <code>height_unit</code>, <code>sex</code>, <code>med_tables</code>, <code>med_data</code>, <code>case_id</code>, <code>reference_time</code>, <code>max_time</code>, <code>failure_reason</code></td></tr>
+<tr><td><code>Logs/SaveUserLog</code></td><td><span class="pill post">POST</span></td><td><span class="pill sp">SP</span> <code>api.SaveUserLog</code> <span class="small muted">&rarr; data</span><br><span class="small muted">caller name passed as @User</span></td><td><span class="muted">no roles</span></td><td><code>Activity_Source_IP</code>, <code>Activity_Server_IP</code>, <code>Activity_Browser_Details</code>, <code>Activity_Type</code>, <code>Activity_Details</code></td></tr>
+</table></div>
+<h4>Meds</h4><div class="table-wrap"><table><tr><th>Endpoint</th><th>Method</th><th>Implementation</th><th>Access</th><th>Parameters</th></tr>
+<tr><td><code>Meds/GetDrugModels</code></td><td><span class="pill post">POST</span></td><td><span class="pill sp">SP</span> <code>Core.GetMedicationModels</code> <span class="small muted">&rarr; data</span></td><td>anonymous</td><td><code>weight</code>?, <code>age</code>?, <code>sex</code>?, <code>height</code>?</td></tr>
+<tr><td><code>Meds/GetMedications</code></td><td><span class="pill get">GET</span></td><td><span class="pill sp">SP</span> <code>core.GetMedications</code> <span class="small muted">&rarr; data</span></td><td>anonymous</td><td>&mdash;</td></tr>
+</table></div>
+<h4>Report</h4><div class="table-wrap"><table><tr><th>Endpoint</th><th>Method</th><th>Implementation</th><th>Access</th><th>Parameters</th></tr>
+<tr><td><code>Report/InternalUser</code></td><td><span class="pill post">POST</span></td><td><span class="pill sp">SP</span> <code>admin.GetUsersLoginCount</code> <span class="small muted">&rarr; data</span></td><td>Administrator</td><td><code>P_DateFrequency</code>, <code>P_PageNumber</code></td></tr>
+</table></div>
+<p class="small muted">URL bases (<code>admin.Application_Lists</code>, section <code>URLBases</code>): <code>EhrFHIR</code> = <code>https://ehr.example.org/Interconnect/</code> (placeholder values in the seed data).</p>
+<!-- END GENERATED:endpoints -->
+
+  <h2 id="client-calls">Client call sites</h2>
+  <p>Every API call made by the server actions in <code>client/api/</code>, checked against the seeded endpoints. A path that is &ldquo;not in SeedData.sql&rdquo; will return &ldquo;This Endpoint Either Does Not Exist&hellip;&rdquo; unless you add it.</p>
+<!-- BEGIN GENERATED:client-calls -->
+<div class="table-wrap"><table><tr><th>Client file</th><th>Function</th><th>Method</th><th>Path called</th><th>Endpoint definition</th></tr>
+<tr><td><code>admin-api.tsx</code></td><td><code>getUserRoles</code></td><td><span class="pill get">GET</span></td><td><code>API/Admin/GetUserRoles</code></td><td><code>Admin/GetUserRoles</code> &mdash; seeded</td></tr>
+<tr><td><code>admin-api.tsx</code></td><td><code>getUsersByRole</code></td><td><span class="pill get">GET</span></td><td><code>API/Admin/GetUsersByRole?Role_Name=${Role_Name}</code></td><td><code>Admin/GetUsersByRole</code> &mdash; seeded</td></tr>
+<tr><td><code>admin-api.tsx</code></td><td><code>editUser</code></td><td><span class="pill post">POST</span></td><td><code>API/Admin/EditUser</code></td><td><code>Admin/EditUser</code> &mdash; seeded</td></tr>
+<tr><td><code>admin-api.tsx</code></td><td><code>deleteUser</code></td><td><span class="pill post">POST</span></td><td><code>API/Admin/DeleteUser</code></td><td><code>Admin/DeleteUser</code> &mdash; seeded</td></tr>
+<tr><td><code>admin-api.tsx</code></td><td><code>addEndpoint</code></td><td><span class="pill post">POST</span></td><td><code>API/Admin/AddEndpoint</code></td><td><code>Admin/AddEndpoint</code> &mdash; seeded</td></tr>
+<tr><td><code>admin-api.tsx</code></td><td><code>updateEndpoint</code></td><td><span class="pill post">POST</span></td><td><code>API/Admin/UpdateEndpoint</code></td><td><code>Admin/UpdateEndpoint</code> &mdash; seeded</td></tr>
+<tr><td><code>admin-api.tsx</code></td><td><code>addParameter</code></td><td><span class="pill post">POST</span></td><td><code>API/Admin/AddParameter</code></td><td><code>Admin/AddParameter</code> &mdash; seeded</td></tr>
+<tr><td><code>admin-api.tsx</code></td><td><code>updateParameter</code></td><td><span class="pill post">POST</span></td><td><code>API/Admin/UpdateParameter</code></td><td><code>Admin/UpdateParameter</code> &mdash; seeded</td></tr>
+<tr><td><code>admin-api.tsx</code></td><td><code>addSecurityRole</code></td><td><span class="pill post">POST</span></td><td><code>API/Admin/AddSecurityRole</code></td><td><code>Admin/AddSecurityRole</code> &mdash; seeded</td></tr>
+<tr><td><code>admin-api.tsx</code></td><td><code>updateSecurityRole</code></td><td><span class="pill post">POST</span></td><td><code>API/Admin/UpdateSecurityRole</code></td><td><code>Admin/UpdateSecurityRole</code> &mdash; seeded</td></tr>
+<tr><td><code>admin-api.tsx</code></td><td><code>getUserPermissions</code></td><td><span class="pill get">GET</span></td><td><code>API/Admin/GetUserPermissions/${user}</code></td><td><code>Admin/GetUserPermissions</code> &mdash; seeded</td></tr>
+<tr><td><code>api-api.tsx</code></td><td><code>getDBEndpoints</code></td><td><span class="pill post">POST</span></td><td><code>API/Admin/GetDBEndpoints</code></td><td><code>Admin/GetDBEndpoints</code> &mdash; seeded</td></tr>
+<tr><td><code>api-api.tsx</code></td><td><code>getApplicationLists</code></td><td><span class="pill post">POST</span></td><td><code>API/Admin/GetApplicationLists</code></td><td><code>Admin/GetApplicationLists</code> &mdash; seeded</td></tr>
+<tr><td><code>api-api.tsx</code></td><td><code>getCurrentAPIEndpoints</code></td><td><span class="pill post">POST</span></td><td><code>Admin/GetCurrentEndpoints</code></td><td>controller route</td></tr>
+<tr><td><code>api-api.tsx</code></td><td><code>reloadDBEndpoints</code></td><td><span class="pill post">POST</span></td><td><code>Admin/ReloadEndpoints</code></td><td>controller route</td></tr>
+<tr><td><code>auth-api.tsx</code></td><td><code>login</code></td><td><span class="pill post">POST</span></td><td><code>Auth/AuthenticateUser</code></td><td>controller route</td></tr>
+<tr><td><code>auth-api.tsx</code></td><td><code>VerifyRecaptcha</code></td><td><span class="pill post">POST</span></td><td><code>recaptcha/verify/</code></td><td>controller route</td></tr>
+<tr><td><code>ehr-api.tsx</code></td><td><code>getEhrClientConfig</code></td><td><span class="pill get">GET</span></td><td><code>ehr/client-config</code></td><td>controller route</td></tr>
+<tr><td><code>ehr-api.tsx</code></td><td><code>getEhrSurgicalCase</code></td><td><span class="pill post">POST</span></td><td><code>API/FHIR/GetSurgicalCase</code></td><td><code>FHIR/GetSurgicalCase</code> &mdash; seeded</td></tr>
+<tr><td><code>ehr-api.tsx</code></td><td><code>getMedicationAdministrations</code></td><td><span class="pill post">POST</span></td><td><code>API/FHIR/GetMedicationAdministration</code></td><td><code>FHIR/GetMedicationAdministration</code> &mdash; seeded</td></tr>
+<tr><td><code>ehr-api.tsx</code></td><td><code>getFHIRMedicationStatements</code></td><td><span class="pill get">GET</span></td><td><code>API/FHIR/GetMedicationStatements</code></td><td><code>FHIR/GetMedicationStatements</code> &mdash; seeded</td></tr>
+<tr><td><code>ehr-api.tsx</code></td><td><code>getFHIRVitalSigns</code></td><td><span class="pill get">GET</span></td><td><code>API/FHIR/GetVitalSigns</code></td><td><code>FHIR/GetVitalSigns</code> &mdash; seeded</td></tr>
+<tr><td><code>ehr-api.tsx</code></td><td><code>getMedications</code></td><td><span class="pill get">GET</span></td><td><code>API/Meds/GetMedications</code></td><td><code>Meds/GetMedications</code> &mdash; seeded</td></tr>
+<tr><td><code>ehr-api.tsx</code></td><td><code>getFHIRMedication</code></td><td><span class="pill get">GET</span></td><td><code>API/FHIR/GetMedication</code></td><td><code>FHIR/GetMedication</code> &mdash; seeded</td></tr>
+<tr><td><code>ehr-api.tsx</code></td><td><code>getDrugModels</code></td><td><span class="pill post">POST</span></td><td><code>API/Meds/GetDrugModels</code></td><td><code>Meds/GetDrugModels</code> &mdash; seeded</td></tr>
+<tr><td><code>ehr-api.tsx</code></td><td><code>getGetCaseFromMPOG</code></td><td><span class="pill post">POST</span></td><td><code>API/MPOG/GetCaseFromMPOG</code></td><td><code>MPOG/GetCaseFromMPOG</code> &mdash; <span class="muted">not in SeedData.sql</span></td></tr>
+<tr><td><code>lists-api.tsx</code></td><td><code>getLists</code></td><td><span class="pill post">POST</span></td><td><code>API/Lists/GetLists</code></td><td><code>Lists/GetLists</code> &mdash; seeded</td></tr>
+<tr><td><code>logs-api.tsx</code></td><td><code>setErrorLog</code></td><td><span class="pill post">POST</span></td><td><code>API/Logs/SaveErrorLog</code></td><td><code>Logs/SaveErrorLog</code> &mdash; seeded</td></tr>
+<tr><td><code>logs-api.tsx</code></td><td><code>saveUserLog</code></td><td><span class="pill post">POST</span></td><td><code>API/Logs/SaveUserLog</code></td><td><code>Logs/SaveUserLog</code> &mdash; seeded</td></tr>
+<tr><td><code>logs-api.tsx</code></td><td><code>saveDebugLog</code></td><td><span class="pill post">POST</span></td><td><code>API/Logs/SaveDebugLog</code></td><td><code>Logs/SaveDebugLog</code> &mdash; <span class="muted">not in SeedData.sql</span></td></tr>
+<tr><td><code>logs-api.tsx</code></td><td><code>sendEmail</code></td><td><span class="pill post">POST</span></td><td><code>API/Logs/SendEmail</code></td><td><code>Logs/SendEmail</code> &mdash; <span class="muted">not in SeedData.sql</span></td></tr>
+<tr><td><code>logs-api.tsx</code></td><td><code>saveGraphLog</code></td><td><span class="pill post">POST</span></td><td><code>API/Logs/SaveGraphLog</code></td><td><code>Logs/SaveGraphLog</code> &mdash; seeded</td></tr>
+<tr><td><code>report-api.tsx</code></td><td><code>getUserReportRows</code></td><td><span class="pill post">POST</span></td><td><code>API/Report/InternalUser</code></td><td><code>Report/InternalUser</code> &mdash; seeded</td></tr>
+</table></div>
+<!-- END GENERATED:client-calls -->
+
+  <h2 id="configuration">Configuration</h2>
+  <p>Settings come from <code>appsettings.json</code> (local runs; template <code>api/deploy/appsettings.example.json</code>) and from environment variables with the <code>MA_</code> prefix, where <code>Section:Key</code> becomes <code>MA_Section__Key</code> and list items get an index (<code>MA_Ehr__User__StripPrefixes__0</code>). Environment variables win. On a server use the IIS <code>web.config</code> only (<code>api/deploy/web.config.example</code>) and do not deploy an <code>appsettings.json</code>.</p>
+  <div class="table-wrap">
+  <table>
+    <tr><th>Setting</th><th>Purpose</th></tr>
+    <tr><td><code>Environment</code></td><td><code>Production</code> on every real server. <code>Development</code> enables passwordless test accounts and session endpoints. Separate from <code>ASPNETCORE_ENVIRONMENT</code> (Swagger, exception page).</td></tr>
+    <tr><td><code>AllowedHosts</code></td><td>Standard ASP.NET host filtering.</td></tr>
+    <tr><td><code>DatabaseSettings:DEFAULT</code></td><td>SQL Server connection string. With <code>Integrated Security=True</code> the IIS app pool identity needs database access.</td></tr>
+    <tr><td><code>AppSettings:SECRET_KEY</code></td><td>Base64 AES key (see <code>examples/GenerateAESKey.ps1</code>). Encrypts client secrets, configuration values and cached sessions.</td></tr>
+    <tr><td><code>AppSettings:SITE_URL</code></td><td>Public site URL(s), comma separated. CORS origins and the development redirect.</td></tr>
+    <tr><td><code>AppSettings:COOKIE_DOMAIN</code></td><td>Domain attribute of the auth cookies.</td></tr>
+    <tr><td><code>AppSettings:AUTH_JKU_URL</code></td><td>URL of <code>/.well-known/jwks.json</code>, written into the <code>jku</code> header of issued tokens.</td></tr>
+    <tr><td><code>AppSettings:RECAPTCHA_SECRET_KEY</code></td><td>Google reCAPTCHA secret (pairs with the client site key).</td></tr>
+    <tr><td><code>AppSettings:SQL_TIMEOUT</code></td><td>Command timeout in seconds.</td></tr>
+    <tr><td><code>AppSettings:APP_NAME</code>, <code>SERVER_CONTEXT</code>, <code>SERVER_IP</code>, <code>ADMIN</code>, <code>ADMIN_EMAIL</code>, <code>DEBUG</code></td><td>Labels and addresses used in log and error emails (<code>ADMIN_EMAIL</code> is a comma-separated recipient list); <code>SERVER_IP</code> is passed to endpoint reloads.</td></tr>
+    <tr><td><code>JwtAuthentication:JWT_PRIVATE_KEY</code> / <code>JWT_PUBLIC_KEY</code></td><td>PEM private key and X.509 certificate used to sign and verify TIVA tokens.</td></tr>
+    <tr><td><code>JwtAuthentication:ValidIssuer</code>, <code>ValidAudience</code></td><td>Token issuer and audience. <code>ValidIssuer</code> also serves as the public base URL for EHR redirects, so give it as <code>https://host/</code> with a trailing slash.</td></tr>
+    <tr><td><code>JwtAuthentication:Kid</code>, <code>SecurityKey</code></td><td>Key ID published in JWKS (default <code>tiva-api-auth</code>); a random 32-character string kept for compatibility (tokens are RS384).</td></tr>
+    <tr><td><code>Ehr:*</code></td><td>SMART on FHIR login and data. Off unless <code>Enabled</code>. See the setup guide <a href="ehr-setup.html">ehr-setup.html</a> and the code walkthrough <a href="ehr-launch-flow.html">ehr-launch-flow.html</a>.</td></tr>
+    <tr><td><code>Ldap:*</code></td><td>Username and password login: <code>Enabled</code>, <code>Host</code>, <code>Port</code> (636), <code>UseSsl</code>, <code>BaseDn</code>, <code>UserFilter</code>, <code>BindDnTemplate</code>. Off by default.</td></tr>
+    <tr><td><code>Smtp:*</code></td><td>Error and help mail: <code>Enabled</code>, <code>Host</code>, <code>Port</code>, <code>UseSsl</code>, <code>From</code>, optional <code>Username</code>/<code>Password</code>. Off by default.</td></tr>
+  </table>
+  </div>
+  <p>Which file to edit: <code>client/.env</code> (build time, client), <code>web.config</code> (IIS, routing and API settings), <code>appsettings.json</code> (local API runs). Config files with secrets are gitignored.</p>
+
+  <h2 id="hosting">Hosting and deployment</h2>
+  <ol>
+    <li>Install IIS with URL Rewrite and iisnode, the ASP.NET Core Hosting Bundle (for the .NET version in <code>api/global.json</code>) and Node.js.</li>
+    <li><code>dotnet publish TIVA_API -c Release -o publish</code>; delete any <code>appsettings.json</code> from <code>publish</code>; copy to the API folder so <code>TIVA_API.dll</code> sits directly in it.</li>
+    <li>Two app pools, both No Managed Code: client, and API (Integrated pipeline, <strong>Maximum Worker Processes = 1</strong>, identity with database access if you use integrated security).</li>
+    <li>Site root = the Next.js build with HTTPS binding; add the API as an application with alias <code>REST</code>. Put <code>web.config</code> (from <code>web.config.example</code>) in the client folder. It routes <code>/REST</code> to the API and everything else to <code>server.js</code>, and holds the <code>MA_*</code> settings.</li>
+    <li>Recycle both pools and open <code>https://&lt;host&gt;/REST/Admin/Health</code>: it should return <code>Healthy</code>.</li>
+  </ol>
+  <div class="callout warn">
+    <p>Single instance only: sessions (including EHR tokens), OAuth state and the endpoint cache are in memory. Do not use a web farm or web garden. After editing <code>api.Endpoints*</code>, call <code>POST /Admin/ReloadEndpoints</code> or recycle the pool.</p>
+  </div>
+
+  <h2 id="code-map">Code map (<code>api/TIVA_API</code>)</h2>
+<pre><code>Program.cs, Startup.cs           host, DI, pipeline, EHR route mapping
+Controllers/
+  APIController.cs               dynamic endpoint engine (GET/POST /Api/{schema}/{endpoint})
+  AuthenticationController.cs    LDAP login, refresh, client auth, logout
+  EhrOAuthController.cs          launch/callback/complete, standalone, client-config, JWKS
+  AdminController.cs             health, reload, encrypt/decrypt, dev session tools
+  ExternalLog.cs, Recaptcha.cs   external usage log, reCAPTCHA verification
+Authentication/                  TokenService (RS384 JWTs), Repository (user/client lookup), DTOs
+Helpers/
+  DAL.cs                         SQL access (typed parameters, DataTable/DataSet/scalar)
+  EndpointCache.cs               in-memory endpoint definitions
+  SessionCache.cs                encrypted per-user sessions, OAuth state, FHIR metadata
+  SmartOnFhirService.cs          metadata, token exchange/refresh, id_token validation, user mapping
+  AccessCheckerService.cs        role check for built-in actions
+  CipherService.cs               AES helpers
+  LogUtil.cs, GeneralUtil.cs     logging and email, misc (JWT for client assertion, URL base lookup)
+Models/                          ReturnInfo, Endpoint, Admin (reload), Authentication (LDAP), settings classes
+examples/                        CreateDB.sql, SeedData.sql, export scripts, token-refresh sample, API editor components
+../deploy/                       appsettings.example.json, web.config.example</code></pre>
+
+  <footer>tiva-open-source workspace docs</footer>
+</main>
+</body>
+</html>
